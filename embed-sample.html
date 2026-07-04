@@ -1,0 +1,336 @@
+<!--
+  ============================================================================
+  FluidSim - production embed pattern (minimal copy-paste sample)
+  ============================================================================
+
+  Minimal snippet to embed the fluid effect inside a section (e.g. a hero):
+
+    <section style="position:relative; overflow:hidden;">
+      <canvas data-fluid-sim
+              data-mode="cursor"
+              data-background="light"
+              data-color-a="#8a2438"
+              data-color-b="#f2c6c2"
+              style="position:absolute; inset:0; width:100%; height:100%; display:block;"></canvas>
+      <div style="position:relative; pointer-events:none;">
+        ... your overlay content (headings, CTA, etc.) ...
+      </div>
+    </section>
+    <script src="fluid-sim.js"></script>
+
+  Notes:
+  - The canvas only needs `data-fluid-sim`; auto-init picks it up on
+    DOMContentLoaded (or immediately if the script runs after the DOM is
+    ready) and stores the instance on `canvas._fluidSimInstance`.
+  - The library listens for `pointermove`/`pointerdown` on the CANVAS
+    element itself (not window), so any overlay element stacked on top of
+    the canvas MUST have `pointer-events:none` or it will block the cursor
+    from reaching the canvas and the fluid will stop reacting under it.
+    Re-enable `pointer-events:auto` only on the specific interactive
+    children (links/buttons) that need to be clickable.
+  - Sizing is section-scoped: the canvas uses getBoundingClientRect() of
+    itself (which already accounts for page scroll), so it works correctly
+    placed inside a normal, scrolling page layout - it does not need to be
+    fullscreen/fixed.
+
+  Supported data-attributes (all optional) on the [data-fluid-sim] element:
+    data-mode                  "cursor" | "ambient"              (default: cursor)
+    data-background            "dark" | "light"                  (default: dark)
+    data-color-mode            "palette" | "rainbow"              (default: palette)
+    data-color-a               hex color, e.g. "#8a2438"
+    data-color-b               hex color, e.g. "#f2c6c2"
+    data-viscosity             0..1                                (default: 0.5)
+    data-speed                 0.05..5                             (default: 1)
+    data-splat-radius          0.01..1                             (default: 0.25)
+    data-curl / data-curl-strength   0..50 (vorticity confinement) (default: 0)
+    data-dye-dissipation        0..1                                (default: 0.995)
+    data-velocity-dissipation   0..1                                (default: 0.98)
+    data-pressure-iterations    10..80                              (default: 40)
+    data-viscosity-iterations   0..50                               (default: 20)
+    data-specular               0..2   (gloss highlight strength)   (default: 0.9)
+    data-shininess              8..200 (gloss highlight sharpness)  (default: 60)
+    data-fresnel                0..1   (rim light)                  (default: 0.35)
+    data-transparency           0..1   (body transparency)          (default: 0)
+
+  After init you can also drive it programmatically via the instance stored
+  on the element, e.g.:
+    var fx = document.querySelector('[data-fluid-sim]')._fluidSimInstance;
+    fx.setColors('#000', '#fff'); fx.setParams({ viscosity: 0.7 });
+  ============================================================================
+-->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MAISON LUMIÈRE &mdash; 美容液 ESSENCE No.5</title>
+<style>
+  :root {
+    --bg: #faf8f6;
+    --fg: #3a2328;
+    --fg-soft: rgba(58,35,40,0.62);
+    --accent: #8a2438;
+    --accent-soft: #f2c6c2;
+    --line: #eaddd8;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+  }
+  a { color: inherit; }
+
+  /* ---- header ---- */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 5vw;
+    background: rgba(250,248,246,0.9);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--line);
+  }
+  .logo {
+    font-family: "Yu Mincho", "Hiragino Mincho ProN", serif;
+    font-size: 18px;
+    letter-spacing: 0.28em;
+    text-indent: 0.1em;
+  }
+  nav {
+    display: flex;
+    gap: 32px;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+  }
+  nav a { text-decoration: none; color: var(--fg-soft); }
+  nav a:hover { color: var(--accent); }
+
+  /* ---- hero: section-scoped canvas, NOT fullscreen-fixed ---- */
+  .hero {
+    position: relative;
+    height: 90vh;
+    min-height: 520px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .hero canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .hero-overlay {
+    position: relative;
+    z-index: 2;
+    text-align: center;
+    pointer-events: none;   /* let pointermove reach the canvas underneath */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    padding: 0 24px;
+  }
+  .hero-kicker {
+    font-size: 12px;
+    letter-spacing: 0.3em;
+    text-indent: 0.3em;
+    color: var(--accent);
+  }
+  .hero-overlay h1 {
+    margin: 0;
+    font-family: "Yu Mincho", "Hiragino Mincho ProN", "Times New Roman", serif;
+    font-weight: 300;
+    font-size: clamp(2.2rem, 5.5vw, 4rem);
+    letter-spacing: 0.24em;
+    text-indent: 0.24em;
+  }
+  .hero-overlay p {
+    margin: 0;
+    max-width: 34em;
+    font-size: 14px;
+    line-height: 2;
+    letter-spacing: 0.06em;
+    color: var(--fg-soft);
+  }
+  .hero-cta {
+    pointer-events: auto;   /* the button itself must stay clickable */
+    display: inline-block;
+    margin-top: 8px;
+    padding: 14px 46px;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 13px;
+    letter-spacing: 0.24em;
+    text-indent: 0.24em;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.5);
+    transition: background 0.2s, color 0.2s;
+  }
+  .hero-cta:hover {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  /* ---- content sections below hero (page must scroll) ---- */
+  section.content {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 96px 24px;
+  }
+  section.content + section.content {
+    border-top: 1px solid var(--line);
+  }
+  .section-kicker {
+    font-size: 11px;
+    letter-spacing: 0.28em;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  section.content h2 {
+    font-family: "Yu Mincho", "Hiragino Mincho ProN", serif;
+    font-weight: 400;
+    font-size: clamp(1.5rem, 3vw, 2.1rem);
+    letter-spacing: 0.1em;
+    margin: 0 0 24px;
+  }
+  section.content p {
+    font-size: 14.5px;
+    line-height: 2.1;
+    color: var(--fg-soft);
+    margin: 0 0 1.4em;
+  }
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 28px;
+    margin-top: 36px;
+  }
+  .feature-card {
+    padding: 24px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+  }
+  .feature-card h3 {
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    margin: 0 0 10px;
+    color: var(--accent);
+  }
+  .feature-card p {
+    font-size: 12.5px;
+    line-height: 1.9;
+    margin: 0;
+  }
+  footer {
+    padding: 40px 5vw 60px;
+    text-align: center;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    color: var(--fg-soft);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">MAISON LUMI&Egrave;RE</div>
+  <nav>
+    <a href="#about">ブランド</a>
+    <a href="#ingredients">成分へのこだわり</a>
+    <a href="#reviews">お客様の声</a>
+  </nav>
+</header>
+
+<section class="hero" id="top">
+  <canvas
+    data-fluid-sim
+    data-mode="cursor"
+    data-background="light"
+    data-color-a="#8a2438"
+    data-color-b="#f2c6c2"
+    data-viscosity="0.5"
+    data-dye-dissipation="0.995"
+    data-velocity-dissipation="0.98"
+    data-splat-radius="0.25"
+    data-specular="0.9"
+    data-shininess="60"
+    data-fresnel="0.35"
+  ></canvas>
+  <div class="hero-overlay">
+    <div class="hero-kicker">NEW ARRIVAL</div>
+    <h1>ESSENCE &#8470;5</h1>
+    <p>
+      一滴に凝縮した、うるおいの粒子。<br>
+      肌の奥まですっと溶け込む、とろみのある美容原液。
+    </p>
+    <a href="#about" class="hero-cta">詳しく見る</a>
+  </div>
+</section>
+
+<section class="content" id="about">
+  <div class="section-kicker">ABOUT</div>
+  <h2>肌にひとしずく、うるおいを</h2>
+  <p>
+    MAISON LUMIÈREのESSENCE No.5は、乾燥や外的ストレスにさらされる肌のために
+    生まれた高濃度美容原液です。とろみのあるテクスチャーが肌の上でとけるように広がり、
+    角層のすみずみまでうるおいを届けます。
+  </p>
+  <p>
+    毎晩のスキンケアの仕上げに数滴。忙しい日々の中でも、鏡の前に立つその瞬間が
+    小さな儀式になるように&mdash;そんな想いを込めて処方しています。
+  </p>
+</section>
+
+<section class="content" id="ingredients">
+  <div class="section-kicker">INGREDIENTS</div>
+  <h2>厳選された成分へのこだわり</h2>
+  <p>
+    国内外の希少な植物エキスと、独自配合の保湿複合成分を高濃度で配合。
+    肌本来の力を引き出すことを目指し、余計な添加物を極力排したシンプルな処方で仕上げました。
+  </p>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3>高濃度保湿複合成分</h3>
+      <p>角層の水分保持を助け、乾燥によるごわつきをやわらげます。</p>
+    </div>
+    <div class="feature-card">
+      <h3>植物由来オイル</h3>
+      <p>軽い使用感ながら、肌表面にうるおいのヴェールをまとわせます。</p>
+    </div>
+    <div class="feature-card">
+      <h3>無香料・無着色</h3>
+      <p>敏感な肌にも配慮したシンプルな処方でつくりました。</p>
+    </div>
+  </div>
+</section>
+
+<section class="content" id="reviews">
+  <div class="section-kicker">VOICE</div>
+  <h2>お使いいただいたお客様の声</h2>
+  <p>
+    「テクスチャーが独特で、肌にのせた瞬間からとろけていくのが分かります。
+    翌朝の肌のもちもち感が全然違いました。」&mdash; 30代・乾燥肌
+  </p>
+  <p>
+    「香りが控えめなので、寝る前のケアにも使いやすいです。リピート決定です。」
+    &mdash; 40代・普通肌
+  </p>
+</section>
+
+<footer>
+  &copy; 2026 MAISON LUMIÈRE. すべての製品は国内工場で製造しています。
+</footer>
+
+<script src="fluid-sim.js"></script>
+</body>
+</html>

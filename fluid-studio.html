@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FluidSim スタジオ</title>
+<style>
+  :root {
+    color-scheme: dark light;
+  }
+  body {
+    --bg: #0d0b0c;
+    --fg: #f2e9e4;
+    --fg-soft: rgba(242,233,228,0.65);
+    --panel-bg: rgba(0,0,0,0.45);
+    --panel-border: rgba(255,255,255,0.06);
+    --btn-bg: #2a1418;
+    --btn-fg: #f2e9e4;
+    --btn-border: #7a1f2b;
+    --btn-active-bg: #7a1f2b;
+    --btn-active-fg: #f2e9e4;
+    --accent: #7a1f2b;
+  }
+  body.theme-light {
+    --bg: #faf7f5;
+    --fg: #3a2328;
+    --fg-soft: rgba(58,35,40,0.6);
+    --panel-bg: rgba(255,255,255,0.8);
+    --panel-border: #eaddd8;
+    --btn-bg: #fdf3f1;
+    --btn-fg: #8a2438;
+    --btn-border: #d9a2a8;
+    --btn-active-bg: #8a2438;
+    --btn-active-fg: #fdf3f1;
+    --accent: #8a2438;
+  }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
+    transition: background 0.25s, color 0.25s;
+  }
+  #stage {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+  canvas#fluid {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    z-index: 1;
+  }
+  /* ---- overlay LP content: sits above the canvas, lets pointer through ---- */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    pointer-events: none;   /* fluid keeps reacting under the text */
+  }
+  .overlay-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    padding: 24px;
+  }
+  .deco {
+    width: 120px;
+    height: 120px;
+    border: 1px solid var(--fg-soft);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .deco svg {
+    width: 46px;
+    height: 78px;
+    color: var(--fg);
+    opacity: 0.8;
+  }
+  .overlay h1 {
+    margin: 0;
+    font-family: "Yu Mincho", "Hiragino Mincho ProN", "Times New Roman", serif;
+    font-weight: 300;
+    font-size: clamp(2.4rem, 6vw, 4.2rem);
+    letter-spacing: 0.32em;
+    text-indent: 0.32em;
+  }
+  .overlay p {
+    margin: 0;
+    font-size: 14px;
+    letter-spacing: 0.22em;
+    color: var(--fg-soft);
+  }
+  .cta {
+    pointer-events: auto;   /* the button must stay clickable */
+    display: inline-block;
+    margin-top: 10px;
+    padding: 12px 42px;
+    border: 1px solid var(--accent);
+    color: var(--fg);
+    text-decoration: none;
+    font-size: 13px;
+    letter-spacing: 0.28em;
+    text-indent: 0.28em;
+    border-radius: 2px;
+    transition: background 0.2s, color 0.2s;
+  }
+  .cta:hover {
+    background: var(--accent);
+    color: var(--btn-active-fg);
+  }
+  /* ---- control panel ---- */
+  .panel {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    z-index: 3;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    padding: 12px 14px;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    backdrop-filter: blur(4px);
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    width: 268px;
+  }
+  .panel .row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .panel .row-label {
+    font-size: 11px;
+    opacity: 0.7;
+    width: 100%;
+  }
+  .panel button {
+    background: var(--btn-bg);
+    color: var(--btn-fg);
+    border: 1px solid var(--btn-border);
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .panel button.active {
+    background: var(--btn-active-bg);
+    color: var(--btn-active-fg);
+    border-color: var(--btn-active-bg);
+  }
+  #settings {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .panel.open #settings {
+    display: flex;
+  }
+  .colors-row {
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+    align-items: center;
+  }
+  .colors-row label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .colors-row input[type=color] {
+    width: 30px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    background: none;
+  }
+  .slider-row {
+    display: grid;
+    grid-template-columns: 74px 1fr 42px;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+  }
+  .slider-row input[type=range] {
+    width: 100%;
+    height: 14px;
+    accent-color: var(--accent);
+  }
+  .slider-row .val {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="fluid" data-fluid-sim data-mode="cursor" data-color-a="#4a0f16" data-color-b="#f0b8ae" data-viscosity="0.5"></canvas>
+
+  <div class="overlay">
+    <div class="overlay-inner">
+      <div class="deco">
+        <svg viewBox="0 0 46 78" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="1.4">
+          <rect x="17" y="2" width="12" height="10" rx="1.5"/>
+          <path d="M19 12 L19 22 Q6 28 6 42 L6 68 Q6 76 14 76 L32 76 Q40 76 40 68 L40 42 Q40 28 27 22 L27 12 Z"/>
+          <line x1="12" y1="48" x2="34" y2="48" stroke-opacity="0.5"/>
+        </svg>
+      </div>
+      <h1>ESSENCE &#8470;5</h1>
+      <p>肌の奥へ、ひとしずくの原液。</p>
+      <a href="#" id="cta" class="cta">詳しく見る</a>
+    </div>
+  </div>
+
+  <div class="panel" id="panel">
+    <div class="row">
+      <button id="btn-cursor" class="active">カーソル追従</button>
+      <button id="btn-ambient">背景アンビエント</button>
+      <button id="btn-settings">設定</button>
+    </div>
+    <div id="settings">
+      <div class="row">
+        <span class="row-label">プリセット</span>
+        <button data-preset="serumDark" class="preset-btn active">原液(黒)</button>
+        <button data-preset="serumWhite" class="preset-btn">原液(白)</button>
+        <button data-preset="clearGel" class="preset-btn">クリア</button>
+        <button data-preset="splash" class="preset-btn">スプラッシュ</button>
+      </div>
+      <div class="row">
+        <span class="row-label">背景</span>
+        <button id="btn-bg-dark" class="active">ダーク</button>
+        <button id="btn-bg-light">ホワイト</button>
+        <label style="font-size:11px; display:flex; align-items:center; gap:4px;">
+          カスタム <input id="bgCustom" type="color" value="#0d0b0c" style="width:30px;height:20px;padding:0;border:none;background:none;">
+        </label>
+      </div>
+      <div class="colors-row">
+        <label>色A <input id="colorA" type="color" value="#4a0f16"></label>
+        <label>色B <input id="colorB" type="color" value="#f0b8ae"></label>
+      </div>
+      <div id="sliders"></div>
+      <div class="row">
+        <button id="btn-reset">リセット</button>
+        <button id="btn-copy">コピー</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="fluid-sim.js"></script>
+<script>
+  window.addEventListener('load', function () {
+    var canvas = document.getElementById('fluid');
+    var fx = canvas._fluidSimInstance;
+
+    // Presets mirror fluid.html / fluid-white.html / fluid-splash.html.
+    var PRESETS = {
+      serumDark: {
+        background: 'dark', mode: 'cursor', colorMode: 'palette',
+        colorA: '#4a0f16', colorB: '#f0b8ae',
+        viscosity: 0.5, dyeDissipation: 0.995, velocityDissipation: 0.98,
+        pressureIterations: 40, viscosityIterations: 20,
+        splatRadius: 0.25, speed: 1, curlStrength: 0,
+        specular: 0.9, shininess: 60, fresnel: 0.35, transparency: 0
+      },
+      serumWhite: {
+        background: 'light', mode: 'cursor', colorMode: 'palette',
+        colorA: '#8a2438', colorB: '#f2c6c2',
+        viscosity: 0.5, dyeDissipation: 0.995, velocityDissipation: 0.98,
+        pressureIterations: 40, viscosityIterations: 20,
+        splatRadius: 0.25, speed: 1, curlStrength: 0,
+        specular: 0.9, shininess: 60, fresnel: 0.35, transparency: 0
+      },
+      clearGel: {
+        background: 'light', mode: 'cursor', colorMode: 'palette',
+        colorA: '#d8e4e8', colorB: '#ffffff',
+        viscosity: 0.6, dyeDissipation: 0.996, velocityDissipation: 0.98,
+        pressureIterations: 40, viscosityIterations: 20,
+        splatRadius: 0.28, speed: 1, curlStrength: 0,
+        specular: 1.6, shininess: 120, fresnel: 0.6, transparency: 0.8
+      },
+      splash: {
+        background: 'dark', mode: 'cursor', colorMode: 'rainbow',
+        colorA: '#4a0f16', colorB: '#f0b8ae',
+        viscosity: 0, dyeDissipation: 0.98, velocityDissipation: 0.99,
+        pressureIterations: 25, viscosityIterations: 0,
+        splatRadius: 0.15, speed: 1.6, curlStrength: 25,
+        specular: 0.2, shininess: 60, fresnel: 0.1, transparency: 0
+      }
+    };
+
+    var SLIDERS = [
+      { key: 'viscosity',           label: '粘度',       min: 0,    max: 1,    step: 0.01,  dec: 2 },
+      { key: 'dyeDissipation',      label: '残留(色)',   min: 0.90, max: 1.00, step: 0.001, dec: 3 },
+      { key: 'velocityDissipation', label: '残留(速度)', min: 0.90, max: 1.00, step: 0.001, dec: 3 },
+      { key: 'pressureIterations',  label: '圧力反復',   min: 10,   max: 80,   step: 1,     dec: 0 },
+      { key: 'viscosityIterations', label: '粘性反復',   min: 0,    max: 50,   step: 1,     dec: 0 },
+      { key: 'splatRadius',         label: '注入半径',   min: 0.05, max: 0.6,  step: 0.01,  dec: 2 },
+      { key: 'speed',               label: '速度',       min: 0.2,  max: 3,    step: 0.05,  dec: 2 },
+      { key: 'curlStrength',        label: 'カール(渦)', min: 0,    max: 50,   step: 1,     dec: 0 },
+      { key: 'specular',            label: 'ツヤ強さ',   min: 0,    max: 2,    step: 0.05,  dec: 2 },
+      { key: 'shininess',           label: 'ツヤ鋭さ',   min: 8,    max: 200,  step: 1,     dec: 0 },
+      { key: 'fresnel',             label: '縁の光',     min: 0,    max: 1,    step: 0.05,  dec: 2 },
+      { key: 'transparency',        label: '透明度',     min: 0,    max: 1,    step: 0.01,  dec: 2 }
+    ];
+
+    var activePreset = 'serumDark';
+    var inputs = {};
+    var slidersHost = document.getElementById('sliders');
+
+    SLIDERS.forEach(function (cfg) {
+      var row = document.createElement('div');
+      row.className = 'slider-row';
+      var name = document.createElement('span');
+      name.textContent = cfg.label;
+      var input = document.createElement('input');
+      input.type = 'range';
+      input.min = cfg.min;
+      input.max = cfg.max;
+      input.step = cfg.step;
+      input.value = PRESETS.serumDark[cfg.key];
+      var val = document.createElement('span');
+      val.className = 'val';
+      val.textContent = Number(PRESETS.serumDark[cfg.key]).toFixed(cfg.dec);
+      input.addEventListener('input', function () {
+        var v = parseFloat(input.value);
+        val.textContent = v.toFixed(cfg.dec);
+        var patch = {};
+        patch[cfg.key] = v;
+        fx.setParams(patch);
+      });
+      row.appendChild(name);
+      row.appendChild(input);
+      row.appendChild(val);
+      slidersHost.appendChild(row);
+      inputs[cfg.key] = { input: input, val: val, dec: cfg.dec };
+    });
+
+    function setModeButtons(mode) {
+      document.getElementById('btn-cursor').classList.toggle('active', mode === 'cursor');
+      document.getElementById('btn-ambient').classList.toggle('active', mode === 'ambient');
+    }
+
+    function setBgButtons(which) {   // 'dark' | 'light' | null (custom)
+      document.getElementById('btn-bg-dark').classList.toggle('active', which === 'dark');
+      document.getElementById('btn-bg-light').classList.toggle('active', which === 'light');
+    }
+
+    function applyTheme(profile, customColor) {
+      document.body.classList.toggle('theme-light', profile === 'light');
+      document.body.style.background = customColor || '';
+      fx.setBackground(profile);
+    }
+
+    function applySettings(s) {
+      SLIDERS.forEach(function (cfg) {
+        if (s[cfg.key] == null) return;
+        inputs[cfg.key].input.value = s[cfg.key];
+        inputs[cfg.key].val.textContent = Number(s[cfg.key]).toFixed(cfg.dec);
+      });
+      if (s.colorA) document.getElementById('colorA').value = s.colorA;
+      if (s.colorB) document.getElementById('colorB').value = s.colorB;
+      fx.setParams(s);
+      if (s.mode) setModeButtons(s.mode);
+      if (s.background) {
+        applyTheme(s.background, '');
+        setBgButtons(s.background);
+        document.getElementById('bgCustom').value = s.background === 'light' ? '#faf7f5' : '#0d0b0c';
+      }
+    }
+
+    function setPresetButtons(name) {
+      var btns = document.querySelectorAll('.preset-btn');
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].classList.toggle('active', btns[i].getAttribute('data-preset') === name);
+      }
+    }
+
+    function applyPreset(name) {
+      activePreset = name;
+      applySettings(PRESETS[name]);
+      setPresetButtons(name);
+    }
+
+    function currentSettings() {
+      var out = {
+        mode: fx.mode,
+        background: fx.background,
+        colorMode: fx.colorMode,
+        colorA: document.getElementById('colorA').value,
+        colorB: document.getElementById('colorB').value
+      };
+      SLIDERS.forEach(function (cfg) {
+        out[cfg.key] = parseFloat(inputs[cfg.key].input.value);
+      });
+      return out;
+    }
+
+    // --- wire up ---
+    document.getElementById('btn-cursor').addEventListener('click', function () {
+      fx.setMode('cursor');
+      setModeButtons('cursor');
+    });
+    document.getElementById('btn-ambient').addEventListener('click', function () {
+      fx.setMode('ambient');
+      setModeButtons('ambient');
+    });
+    document.getElementById('btn-settings').addEventListener('click', function () {
+      document.getElementById('panel').classList.toggle('open');
+    });
+
+    var presetBtns = document.querySelectorAll('.preset-btn');
+    for (var i = 0; i < presetBtns.length; i++) {
+      presetBtns[i].addEventListener('click', function () {
+        applyPreset(this.getAttribute('data-preset'));
+      });
+    }
+
+    document.getElementById('btn-bg-dark').addEventListener('click', function () {
+      applyTheme('dark', '');
+      setBgButtons('dark');
+      document.getElementById('bgCustom').value = '#0d0b0c';
+    });
+    document.getElementById('btn-bg-light').addEventListener('click', function () {
+      applyTheme('light', '');
+      setBgButtons('light');
+      document.getElementById('bgCustom').value = '#faf7f5';
+    });
+    document.getElementById('bgCustom').addEventListener('input', function (e) {
+      var hex = e.target.value;
+      var r = parseInt(hex.substr(1, 2), 16) / 255;
+      var g = parseInt(hex.substr(3, 2), 16) / 255;
+      var b = parseInt(hex.substr(5, 2), 16) / 255;
+      var lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      applyTheme(lum > 0.6 ? 'light' : 'dark', hex);
+      setBgButtons(null);
+    });
+
+    document.getElementById('btn-reset').addEventListener('click', function () {
+      applyPreset(activePreset);
+    });
+    document.getElementById('btn-copy').addEventListener('click', function () {
+      var json = JSON.stringify(currentSettings(), null, 2);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(json);
+      }
+    });
+    document.getElementById('colorA').addEventListener('input', function (e) {
+      fx.setColors(e.target.value, document.getElementById('colorB').value);
+    });
+    document.getElementById('colorB').addEventListener('input', function (e) {
+      fx.setColors(document.getElementById('colorA').value, e.target.value);
+    });
+
+    // demo CTA: no navigation, just record the click so it is testable
+    document.getElementById('cta').addEventListener('click', function (e) {
+      e.preventDefault();
+      this.setAttribute('data-clicked', (parseInt(this.getAttribute('data-clicked') || '0', 10) + 1) + '');
+    });
+
+    // --- URL query parameters (?ui=1 to show panel / ?overlay=0 / ?preset=... / param overrides) ---
+    var q = new URLSearchParams(location.search);
+
+    var presetParam = q.get('preset');
+    var PRESET_ALIASES = { clear: 'clearGel', clearGel: 'clearGel',
+                           serumDark: 'serumDark', serumWhite: 'serumWhite', splash: 'splash' };
+    applyPreset(PRESET_ALIASES[presetParam] || 'serumDark');
+
+    // per-parameter overrides, same keys as the コピー JSON ('curl' also accepted)
+    var overrides = {};
+    var NUM_KEYS = ['viscosity', 'dyeDissipation', 'velocityDissipation', 'pressureIterations',
+                    'viscosityIterations', 'splatRadius', 'speed', 'curlStrength',
+                    'specular', 'shininess', 'fresnel', 'transparency'];
+    NUM_KEYS.forEach(function (key) {
+      var raw = q.get(key) != null ? q.get(key) : (key === 'curlStrength' ? q.get('curl') : null);
+      if (raw == null) return;
+      var v = parseFloat(raw);
+      if (!isNaN(v)) overrides[key] = v;
+    });
+    ['mode', 'background', 'colorMode', 'colorA', 'colorB'].forEach(function (key) {
+      var raw = q.get(key);
+      if (!raw) return;
+      if (key === 'colorA' || key === 'colorB') {
+        if (/^[a-f\d]{6}$/i.test(raw)) raw = '#' + raw;   // allow unencoded hex
+        if (!/^#[a-f\d]{6}$/i.test(raw)) return;
+      }
+      overrides[key] = raw;
+    });
+    if (Object.keys(overrides).length) applySettings(overrides);
+
+    // UI is hidden by default; only ?ui=1 (or ?ui=true) reveals the settings panel.
+    var uiParam = q.get('ui');
+    if (uiParam === '1' || uiParam === 'true') {
+      document.getElementById('panel').style.display = 'flex';
+    } else {
+      document.getElementById('panel').style.display = 'none';
+    }
+    if (q.get('overlay') === '0') {
+      document.querySelector('.overlay').style.display = 'none';
+    }
+  });
+</script>
+</body>
+</html>

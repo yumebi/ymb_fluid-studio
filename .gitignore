@@ -1,0 +1,7 @@
+.claude/
+node_modules/
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
