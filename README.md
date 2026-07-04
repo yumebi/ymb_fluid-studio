@@ -27,10 +27,6 @@
 | メタボール版(軽量・旧実装) | 格子流体ではなくメタボールフィールドによる旧実装 | https://yumebi.github.io/ymb_fluid-studio/metaball.html |
 | トップページ | デモ一覧ランディングページ | https://yumebi.github.io/ymb_fluid-studio/ |
 
-### GitHub Pages の有効化
-
-`Settings` → `Pages` → `Deploy from a branch` → `main` / `(root)` を選択して保存すると、上記の各URLが利用可能になります。
-
 ## 主な機能
 
 - 🌊 格子流体シミュレーション(セミラグランジュ移流 + 圧力射影)
@@ -153,4 +149,4 @@ var fx = new FluidSim(canvasOrSelector, {
 
 ## ライセンス
 
-[MIT](./LICENSE)
+MIT License © 2026 ymb
