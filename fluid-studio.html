@@ -256,6 +256,16 @@
         <label>色A <input id="colorA" type="color" value="#4a0f16"></label>
         <label>色B <input id="colorB" type="color" value="#f0b8ae"></label>
       </div>
+      <div class="row">
+        <label style="font-size:11px; display:flex; align-items:center; gap:4px;">
+          <input id="chk-pointer-trail" type="checkbox" checked> 尾を引く
+        </label>
+      </div>
+      <div class="row">
+        <span class="row-label">発生</span>
+        <button id="btn-emit-move" class="active">移動</button>
+        <button id="btn-emit-click">クリック</button>
+      </div>
       <div id="sliders"></div>
       <div class="row">
         <button id="btn-reset">リセット</button>
@@ -279,7 +289,8 @@
         viscosity: 0.5, dyeDissipation: 0.995, velocityDissipation: 0.98,
         pressureIterations: 40, viscosityIterations: 20,
         splatRadius: 0.25, speed: 1, curlStrength: 0,
-        specular: 0.9, shininess: 60, fresnel: 0.35, transparency: 0
+        specular: 0.9, shininess: 60, fresnel: 0.35, transparency: 0,
+        pointerTrail: true, pointerEmit: 'move'
       },
       serumWhite: {
         background: 'light', mode: 'cursor', colorMode: 'palette',
@@ -287,7 +298,8 @@
         viscosity: 0.5, dyeDissipation: 0.995, velocityDissipation: 0.98,
         pressureIterations: 40, viscosityIterations: 20,
         splatRadius: 0.25, speed: 1, curlStrength: 0,
-        specular: 0.9, shininess: 60, fresnel: 0.35, transparency: 0
+        specular: 0.9, shininess: 60, fresnel: 0.35, transparency: 0,
+        pointerTrail: true, pointerEmit: 'move'
       },
       clearGel: {
         background: 'light', mode: 'cursor', colorMode: 'palette',
@@ -295,7 +307,8 @@
         viscosity: 0.6, dyeDissipation: 0.996, velocityDissipation: 0.98,
         pressureIterations: 40, viscosityIterations: 20,
         splatRadius: 0.28, speed: 1, curlStrength: 0,
-        specular: 1.6, shininess: 120, fresnel: 0.6, transparency: 0.8
+        specular: 1.6, shininess: 120, fresnel: 0.6, transparency: 0.8,
+        pointerTrail: true, pointerEmit: 'move'
       },
       splash: {
         background: 'dark', mode: 'cursor', colorMode: 'rainbow',
@@ -303,7 +316,8 @@
         viscosity: 0, dyeDissipation: 0.98, velocityDissipation: 0.99,
         pressureIterations: 25, viscosityIterations: 0,
         splatRadius: 0.15, speed: 1.6, curlStrength: 25,
-        specular: 0.2, shininess: 60, fresnel: 0.1, transparency: 0
+        specular: 0.2, shininess: 60, fresnel: 0.1, transparency: 0,
+        pointerTrail: true, pointerEmit: 'move'
       }
     };
 
@@ -364,6 +378,11 @@
       document.getElementById('btn-bg-light').classList.toggle('active', which === 'light');
     }
 
+    function setEmitButtons(emit) {
+      document.getElementById('btn-emit-move').classList.toggle('active', emit !== 'click');
+      document.getElementById('btn-emit-click').classList.toggle('active', emit === 'click');
+    }
+
     function applyTheme(profile, customColor) {
       document.body.classList.toggle('theme-light', profile === 'light');
       document.body.style.background = customColor || '';
@@ -378,6 +397,8 @@
       });
       if (s.colorA) document.getElementById('colorA').value = s.colorA;
       if (s.colorB) document.getElementById('colorB').value = s.colorB;
+      if (s.pointerTrail != null) document.getElementById('chk-pointer-trail').checked = s.pointerTrail;
+      if (s.pointerEmit != null) setEmitButtons(s.pointerEmit);
       fx.setParams(s);
       if (s.mode) setModeButtons(s.mode);
       if (s.background) {
@@ -406,7 +427,9 @@
         background: fx.background,
         colorMode: fx.colorMode,
         colorA: document.getElementById('colorA').value,
-        colorB: document.getElementById('colorB').value
+        colorB: document.getElementById('colorB').value,
+        pointerTrail: fx.pointerTrail,
+        pointerEmit: fx.pointerEmit
       };
       SLIDERS.forEach(function (cfg) {
         out[cfg.key] = parseFloat(inputs[cfg.key].input.value);
@@ -425,6 +448,17 @@
     });
     document.getElementById('btn-settings').addEventListener('click', function () {
       document.getElementById('panel').classList.toggle('open');
+    });
+    document.getElementById('chk-pointer-trail').addEventListener('change', function (e) {
+      fx.setPointerTrail(e.target.checked);
+    });
+    document.getElementById('btn-emit-move').addEventListener('click', function () {
+      fx.setPointerEmit('move');
+      setEmitButtons('move');
+    });
+    document.getElementById('btn-emit-click').addEventListener('click', function () {
+      fx.setPointerEmit('click');
+      setEmitButtons('click');
     });
 
     var presetBtns = document.querySelectorAll('.preset-btn');
@@ -495,7 +529,14 @@
       var v = parseFloat(raw);
       if (!isNaN(v)) overrides[key] = v;
     });
-    ['mode', 'background', 'colorMode', 'colorA', 'colorB'].forEach(function (key) {
+    // pointerTrail is boolean-shaped (accepts 1/true/0/false), so it is
+    // parsed separately rather than folded into NUM_KEYS or the plain
+    // string-passthrough list below.
+    if (q.get('pointerTrail') != null) {
+      var ptRaw = q.get('pointerTrail');
+      overrides.pointerTrail = ptRaw === '1' || ptRaw === 'true';
+    }
+    ['mode', 'background', 'colorMode', 'colorA', 'colorB', 'pointerEmit'].forEach(function (key) {
       var raw = q.get(key);
       if (!raw) return;
       if (key === 'colorA' || key === 'colorB') {

@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FluidSim スプラッシュデモ</title>
+<title>水面コースティクス — WebGL2デモ</title>
 <style>
   html, body {
     margin: 0;
     height: 100%;
-    background: #0b0b10;
+    background: #f4faf9;
     font-family: -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
-    color: #e8e6f0;
+    color: #204b4a;
     overflow: hidden;
   }
   #stage {
@@ -18,7 +18,7 @@
     width: 100%;
     height: 100%;
   }
-  canvas#fluid {
+  canvas#water {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -30,16 +30,21 @@
     top: 16px;
     left: 16px;
     z-index: 10;
-    background: rgba(10,10,20,0.5);
+    background: rgba(255,255,255,0.82);
+    border: 1px solid #cdeae6;
     padding: 12px 14px;
     border-radius: 10px;
-    display: flex;
+    display: none;
     flex-direction: column;
     gap: 10px;
     backdrop-filter: blur(4px);
+    box-shadow: 0 2px 12px rgba(37,120,115,0.10);
     max-height: calc(100vh - 64px);
     overflow-y: auto;
-    width: 264px;
+    width: 268px;
+  }
+  .panel.show {
+    display: flex;
   }
   .row-top {
     display: flex;
@@ -48,24 +53,23 @@
     flex-wrap: wrap;
   }
   .panel button {
-    background: #1c1830;
-    color: #e8e6f0;
-    border: 1px solid #4b3f8f;
+    background: #eafbf9;
+    color: #1c7d76;
+    border: 1px solid #a9dcd6;
     padding: 5px 12px;
     border-radius: 6px;
     cursor: pointer;
     font-size: 12px;
   }
   .panel button.active {
-    background: #4b3f8f;
+    background: #1c7d76;
+    color: #eafbf9;
+    border-color: #1c7d76;
   }
   #settings {
-    display: none;
+    display: flex;
     flex-direction: column;
     gap: 6px;
-  }
-  .panel.open #settings {
-    display: flex;
   }
   .colors-row {
     display: flex;
@@ -95,7 +99,7 @@
   .slider-row input[type=range] {
     width: 100%;
     height: 14px;
-    accent-color: #4b3f8f;
+    accent-color: #1c7d76;
   }
   .slider-row .val {
     text-align: right;
@@ -113,25 +117,32 @@
     transform: translateX(-50%);
     font-size: 13px;
     letter-spacing: 0.1em;
-    opacity: 0.6;
+    opacity: 0.55;
     z-index: 10;
     white-space: nowrap;
+    display: none;
+  }
+  .caption.show {
+    display: block;
   }
 </style>
 </head>
 <body>
 <div id="stage">
-  <canvas id="fluid" data-fluid-sim data-mode="cursor" data-color-mode="rainbow" data-curl-strength="25" data-viscosity="0" data-speed="1.6"></canvas>
+  <canvas id="water" data-water-caustics data-mode="cursor" data-background="light" data-color-a="#bfe6e4" data-color-b="#4f9ea8"></canvas>
   <div class="panel" id="panel">
     <div class="row-top">
       <button id="btn-cursor" class="active">カーソル追従</button>
-      <button id="btn-ambient">背景アンビエント</button>
-      <button id="btn-settings">設定</button>
+      <button id="btn-ambient">アンビエント</button>
     </div>
     <div id="settings">
+      <div class="btn-row">
+        <button id="btn-bg-light" class="active">昼</button>
+        <button id="btn-bg-dark">夜</button>
+      </div>
       <div class="colors-row">
-        <label>色A <input id="colorA" type="color" value="#4a0f16"></label>
-        <label>色B <input id="colorB" type="color" value="#f0b8ae"></label>
+        <label>色A(浅) <input id="colorA" type="color" value="#bfe6e4"></label>
+        <label>色B(深) <input id="colorB" type="color" value="#4f9ea8"></label>
       </div>
       <div id="sliders"></div>
       <div class="btn-row">
@@ -150,53 +161,40 @@
       </div>
     </div>
   </div>
-  <div class="caption">カラフル・スプラッシュ流体 &mdash; WebGL2 / オリジナル実装</div>
+  <div class="caption">水面コースティクス &mdash; WebGL2 / オリジナル実装</div>
 </div>
 
-<script src="fluid-sim.js"></script>
+<script src="water-caustics.js"></script>
 <script>
   window.addEventListener('load', function () {
-    var canvas = document.getElementById('fluid');
-    var fx = canvas._fluidSimInstance;
+    var canvas = document.getElementById('water');
+    var fx = canvas._waterCausticsInstance;
 
     var DEFAULTS = {
       mode: 'cursor',
-      colorMode: 'rainbow',
-      colorA: '#4a0f16',
-      colorB: '#f0b8ae',
-      viscosity: 0,
-      dyeDissipation: 0.98,
-      velocityDissipation: 0.99,
-      pressureIterations: 25,
-      viscosityIterations: 0,
-      splatRadius: 0.15,
-      speed: 1.6,
-      curlStrength: 25,
-      specular: 0.2,
-      shininess: 60,
-      fresnel: 0.1,
-      transparency: 0,
+      background: 'light',
+      colorA: '#bfe6e4',
+      colorB: '#4f9ea8',
+      waveHeight: 0.45,
+      waveSpeed: 0.6,
+      causticStrength: 1.1,
+      causticScale: 1.3,
+      chromatic: 0.35,
+      rayStrength: 0.12,
+      rippleStrength: 1.35,
       pointerTrail: true,
       pointerEmit: 'move'
     };
 
     var SLIDERS = [
-      { key: 'viscosity',           label: '粘度',       min: 0,    max: 1,    step: 0.01,  dec: 2 },
-      { key: 'dyeDissipation',      label: '残留(色)',   min: 0.90, max: 1.00, step: 0.001, dec: 3 },
-      { key: 'velocityDissipation', label: '残留(速度)', min: 0.90, max: 1.00, step: 0.001, dec: 3 },
-      { key: 'pressureIterations',  label: '圧力反復',   min: 10,   max: 80,   step: 1,     dec: 0 },
-      { key: 'viscosityIterations', label: '粘性反復',   min: 0,    max: 50,   step: 1,     dec: 0 },
-      { key: 'splatRadius',         label: '注入半径',   min: 0.05, max: 0.6,  step: 0.01,  dec: 2 },
-      { key: 'speed',               label: '速度',       min: 0.2,  max: 3,    step: 0.05,  dec: 2 },
-      { key: 'curlStrength',        label: 'カール(渦)', min: 0,    max: 50,   step: 1,     dec: 0 },
-      { key: 'specular',            label: 'ツヤ強さ',   min: 0,    max: 2,    step: 0.05,  dec: 2 },
-      { key: 'shininess',           label: 'ツヤ鋭さ',   min: 8,    max: 200,  step: 1,     dec: 0 },
-      { key: 'fresnel',             label: '縁の光',     min: 0,    max: 1,    step: 0.05,  dec: 2 },
-      { key: 'transparency',        label: '透明度',     min: 0,    max: 1,    step: 0.01,  dec: 2 }
+      { key: 'waveHeight',      label: '波の高さ', min: 0,   max: 1,   step: 0.01, dec: 2 },
+      { key: 'waveSpeed',       label: '波の速さ', min: 0.1, max: 3,   step: 0.05, dec: 2 },
+      { key: 'causticStrength', label: '光の強さ', min: 0,   max: 3,   step: 0.05, dec: 2 },
+      { key: 'causticScale',    label: '光の細かさ', min: 0.3, max: 4, step: 0.05, dec: 2 },
+      { key: 'chromatic',       label: '色収差',   min: 0,   max: 1,   step: 0.01, dec: 2 },
+      { key: 'rayStrength',     label: '光条',     min: 0,   max: 1,   step: 0.01, dec: 2 },
+      { key: 'rippleStrength',  label: '波紋強さ', min: 0,   max: 2,   step: 0.01, dec: 2 }
     ];
-
-    // data attributes cover mode/colorMode/curl/viscosity/speed; apply the rest
-    fx.setParams(DEFAULTS);
 
     var inputs = {};
     var slidersHost = document.getElementById('sliders');
@@ -231,7 +229,7 @@
     function currentSettings() {
       var out = {
         mode: fx.mode,
-        colorMode: fx.colorMode,
+        background: fx.background,
         colorA: document.getElementById('colorA').value,
         colorB: document.getElementById('colorB').value,
         pointerTrail: fx.pointerTrail,
@@ -248,22 +246,29 @@
       document.getElementById('btn-ambient').classList.toggle('active', mode === 'ambient');
     }
 
+    function setBgButtons(bg) {
+      document.getElementById('btn-bg-light').classList.toggle('active', bg === 'light');
+      document.getElementById('btn-bg-dark').classList.toggle('active', bg === 'dark');
+    }
+
     function setEmitButtons(emit) {
       document.getElementById('btn-emit-move').classList.toggle('active', emit !== 'click');
       document.getElementById('btn-emit-click').classList.toggle('active', emit === 'click');
     }
 
-    function applyDefaults() {
+    function applySettings(s) {
       SLIDERS.forEach(function (cfg) {
-        inputs[cfg.key].input.value = DEFAULTS[cfg.key];
-        inputs[cfg.key].val.textContent = Number(DEFAULTS[cfg.key]).toFixed(cfg.dec);
+        if (s[cfg.key] == null) return;
+        inputs[cfg.key].input.value = s[cfg.key];
+        inputs[cfg.key].val.textContent = Number(s[cfg.key]).toFixed(cfg.dec);
       });
-      document.getElementById('colorA').value = DEFAULTS.colorA;
-      document.getElementById('colorB').value = DEFAULTS.colorB;
-      document.getElementById('chk-pointer-trail').checked = DEFAULTS.pointerTrail;
-      setEmitButtons(DEFAULTS.pointerEmit);
-      fx.setParams(DEFAULTS);
-      setModeButtons(DEFAULTS.mode);
+      if (s.colorA) document.getElementById('colorA').value = s.colorA;
+      if (s.colorB) document.getElementById('colorB').value = s.colorB;
+      if (s.pointerTrail != null) document.getElementById('chk-pointer-trail').checked = s.pointerTrail;
+      if (s.pointerEmit != null) setEmitButtons(s.pointerEmit);
+      fx.setParams(s);
+      if (s.mode) setModeButtons(s.mode);
+      if (s.background) setBgButtons(s.background);
     }
 
     document.getElementById('btn-cursor').addEventListener('click', function () {
@@ -273,9 +278,6 @@
     document.getElementById('btn-ambient').addEventListener('click', function () {
       fx.setMode('ambient');
       setModeButtons('ambient');
-    });
-    document.getElementById('btn-settings').addEventListener('click', function () {
-      document.getElementById('panel').classList.toggle('open');
     });
     document.getElementById('chk-pointer-trail').addEventListener('change', function (e) {
       fx.setPointerTrail(e.target.checked);
@@ -288,7 +290,19 @@
       fx.setPointerEmit('click');
       setEmitButtons('click');
     });
-    document.getElementById('btn-reset').addEventListener('click', applyDefaults);
+    document.getElementById('btn-bg-light').addEventListener('click', function () {
+      fx.setBackground('light');
+      setBgButtons('light');
+    });
+    document.getElementById('btn-bg-dark').addEventListener('click', function () {
+      fx.setBackground('dark');
+      setBgButtons('dark');
+    });
+    document.getElementById('btn-reset').addEventListener('click', function () {
+      applySettings(DEFAULTS);
+      setModeButtons(DEFAULTS.mode);
+      setBgButtons(DEFAULTS.background);
+    });
     document.getElementById('btn-copy').addEventListener('click', function () {
       var json = JSON.stringify(currentSettings(), null, 2);
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -305,8 +319,8 @@
     // UI hidden by default; ?ui=1 (or ?ui=true) reveals the settings panel + caption.
     var uiParam = new URLSearchParams(location.search).get('ui');
     var showUi = uiParam === '1' || uiParam === 'true';
-    document.getElementById('panel').style.display = showUi ? 'flex' : 'none';
-    document.querySelector('.caption').style.display = showUi ? 'block' : 'none';
+    document.getElementById('panel').classList.toggle('show', showUi);
+    document.querySelector('.caption').classList.toggle('show', showUi);
   });
 </script>
 </body>

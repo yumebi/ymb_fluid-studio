@@ -20,18 +20,29 @@
  * shading profile; use 'light' when the canvas sits on a white/bright page.
  * Also settable via data-background attribute in auto-init.
  *
+ * Pointer-interaction options (embeddable-behavior controls):
+ *   pointerTrail (default true) - when false, pointer movement injects
+ *     velocity only (it stirs whatever dye is already in the field) and
+ *     never splats new color along the path, so moving the pointer leaves
+ *     no persistent trail of dye.
+ *   pointerEmit ('move' default | 'click') - when 'click', hovering
+ *     without the button held produces nothing at all (no velocity splat,
+ *     no dye); only pointerdown and drag-while-down inject into the sim.
+ *     Applies on top of pointerTrail.
+ *
  * Runtime tuning:
  *   Named setters - setViscosity(0..1), setDyeDissipation(0..1),
  *   setVelocityDissipation(0..1), setPressureIterations(10..80),
  *   setViscosityIterations(0..50), setSplatRadius(0.01..1), setSpeed(0.05..5),
  *   setCurlStrength(0..50) (vorticity confinement, 0 = off),
- *   setColorMode('palette' | 'rainbow'),
+ *   setColorMode('palette' | 'rainbow'), setPointerTrail(bool),
+ *   setPointerEmit('move'|'click'),
  *   setDisplayParams({ specular: 0..2, shininess: 8..200, fresnel: 0..1,
  *   transparency: 0..1 }).
  *   Or bulk: setParams({ mode, background, colorA, colorB, colorMode,
  *   viscosity, dyeDissipation, velocityDissipation, pressureIterations,
- *   viscosityIterations, splatRadius, speed, curlStrength, specular,
- *   shininess, fresnel, transparency })
+ *   viscosityIterations, splatRadius, speed, curlStrength, pointerTrail,
+ *   pointerEmit, specular, shininess, fresnel, transparency })
  *   - unknown/absent keys are ignored, values are clamped.
  *
  * Auto-init data attributes (on the [data-fluid-sim] element):
@@ -40,6 +51,7 @@
  *   data-curl (or data-curl-strength),
  *   data-dye-dissipation, data-velocity-dissipation,
  *   data-pressure-iterations, data-viscosity-iterations,
+ *   data-pointer-trail, data-pointer-emit,
  *   data-specular, data-shininess, data-fresnel, data-transparency
  */
 (function (global) {
@@ -467,6 +479,8 @@
     this.background = options.background === 'light' ? 'light' : 'dark';
     this.curlStrength = options.curlStrength != null ? clamp(options.curlStrength, 0, 50) : 0;
     this.colorMode = options.colorMode === 'rainbow' ? 'rainbow' : 'palette';
+    this.pointerTrail = options.pointerTrail !== false;
+    this.pointerEmit = options.pointerEmit === 'click' ? 'click' : 'move';
     var dp = options.displayParams || {};
     this.displayParams = {
       specular: dp.specular != null ? dp.specular : 0.9,
@@ -639,7 +653,10 @@
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   };
 
-  FluidSim.prototype._splat = function (xNorm, yNorm, dxNorm, dyNorm, color) {
+  // skipDye: when true, only the velocity field is disturbed (used by
+  // pointerTrail=false so a moving pointer stirs the existing dye without
+  // laying down any new color along its path).
+  FluidSim.prototype._splat = function (xNorm, yNorm, dxNorm, dyNorm, color, skipDye) {
     var gl = this.gl;
     var aspect = this.canvas.width / this.canvas.height;
     var radius = this.splatRadius * 0.001 * Math.max(this.canvas.width, this.canvas.height) / Math.max(this.simSize.w, this.simSize.h) + this.splatRadius * 0.02;
@@ -657,6 +674,8 @@
     gl.uniform1f(u.uAspect, aspect);
     this._drawTo(this.velocity.write.fbo, this.velocity.w, this.velocity.h);
     this.velocity.swap();
+
+    if (skipDye) return;
 
     // dye splat
     gl.activeTexture(gl.TEXTURE0);
@@ -686,11 +705,17 @@
     var p = this._pointer;
     if (!p.moved) return;
     p.moved = false;
+    // pointerEmit='click': a plain hover-move never reaches here at all
+    // (see _onPointerMove, which only sets p.moved while p.down is true),
+    // so no extra gating is needed in this function for that option.
     var speed = Math.sqrt(p.dx * p.dx + p.dy * p.dy) / Math.max(dt, 0.0001);
     var force = clamp(speed * 0.9, 0, 12);
     var color = this._randomizedColor(clamp(speed * 0.5, 0, 1));
     var mulX = p.down ? 1.6 : 1.0;
-    this._splat(p.x, p.y, p.dx * force, p.dy * force, [color[0] * mulX, color[1] * mulX, color[2] * mulX]);
+    // pointerTrail=false: inject velocity only so the pointer stirs the
+    // existing dye field without laying down a persistent trail of new
+    // color along its path.
+    this._splat(p.x, p.y, p.dx * force, p.dy * force, [color[0] * mulX, color[1] * mulX, color[2] * mulX], !this.pointerTrail);
   };
 
   FluidSim.prototype._updateAmbient = function (dt) {
@@ -923,6 +948,15 @@
   FluidSim.prototype._onPointerMove = function (e) {
     var pt = this._normalizedPoint(e);
     var last = this._lastPointer;
+    // pointerEmit='click': hovering without the button held must produce
+    // nothing at all (no velocity, no dye) - only update the tracked
+    // position/delta so a subsequent pointerdown-drag starts from a
+    // sensible baseline, but never flag moved=true while up.
+    if (this.pointerEmit === 'click' && !this._pointer.down) {
+      last.x = pt.x;
+      last.y = pt.y;
+      return;
+    }
     this._pointer.dx = pt.x - last.x;
     this._pointer.dy = pt.y - last.y;
     this._pointer.x = pt.x;
@@ -1020,6 +1054,18 @@
     this.colorMode = m === 'rainbow' ? 'rainbow' : 'palette';
   };
 
+  // pointerTrail=false: pointer motion injects velocity only (stirs the
+  // existing dye) and never lays down new dye along its path.
+  FluidSim.prototype.setPointerTrail = function (b) {
+    this.pointerTrail = !!b;
+  };
+
+  // pointerEmit 'click': hovering without the button held produces nothing
+  // at all; only pointerdown + drag-while-down injects into the sim.
+  FluidSim.prototype.setPointerEmit = function (v) {
+    this.pointerEmit = v === 'click' ? 'click' : 'move';
+  };
+
   // Partial update: any of { specular: 0..2, shininess: 8..200,
   // fresnel: 0..1, transparency: 0..1 }.
   FluidSim.prototype.setDisplayParams = function (p) {
@@ -1048,6 +1094,8 @@
     if (p.speed != null) this.setSpeed(p.speed);
     if (p.curlStrength != null) this.setCurlStrength(p.curlStrength);
     if (p.colorMode != null) this.setColorMode(p.colorMode);
+    if (p.pointerTrail != null) this.setPointerTrail(p.pointerTrail);
+    if (p.pointerEmit != null) this.setPointerEmit(p.pointerEmit);
     this.setDisplayParams(p);
   };
 
@@ -1122,6 +1170,11 @@
       var num = function (name) {
         return el.hasAttribute(name) ? parseFloat(el.getAttribute(name)) : undefined;
       };
+      var bool = function (name, def) {
+        if (!el.hasAttribute(name)) return def;
+        var v = el.getAttribute(name);
+        return v === 'true' || v === '1' || v === '';
+      };
       var opts = {
         mode: el.getAttribute('data-mode') || undefined,
         colorA: el.getAttribute('data-color-a') || undefined,
@@ -1136,6 +1189,8 @@
         velocityDissipation: num('data-velocity-dissipation'),
         pressureIterations: num('data-pressure-iterations'),
         viscosityIterations: num('data-viscosity-iterations'),
+        pointerTrail: el.hasAttribute('data-pointer-trail') ? bool('data-pointer-trail', true) : undefined,
+        pointerEmit: el.getAttribute('data-pointer-emit') || undefined,
         displayParams: {
           specular: num('data-specular'),
           shininess: num('data-shininess'),
