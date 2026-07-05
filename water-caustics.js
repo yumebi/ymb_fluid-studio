@@ -375,6 +375,16 @@
     this.canvas = canvas;
     this.host = el;
 
+    // Mobile: without touch-action:none, the browser treats a finger-down
+    // on the canvas as a scroll/pan gesture and never delivers pointermove
+    // for the drag. Setting it here (not just in demo CSS) means embeds
+    // get correct touch dragging for free. user-select/tap-highlight avoid
+    // incidental text selection / flash on tap.
+    canvas.style.touchAction = 'none';
+    canvas.style.webkitUserSelect = 'none';
+    canvas.style.userSelect = 'none';
+    canvas.style.webkitTapHighlightColor = 'transparent';
+
     this.mode = options.mode === 'ambient' ? 'ambient' : 'cursor';
     this.background = options.background === 'dark' ? 'dark' : 'light';
     this._hexA = options.colorA || '#bfe6e4';
@@ -422,6 +432,10 @@
     canvas.addEventListener('pointermove', this._onPointerMove);
     canvas.addEventListener('pointerdown', this._onPointerDown);
     window.addEventListener('pointerup', this._onPointerUp);
+    // pointercancel fires when the browser steals the gesture mid-drag
+    // (e.g. a system edge-swipe on mobile) - treat exactly like pointerup
+    // so the "down" state never gets stuck true.
+    window.addEventListener('pointercancel', this._onPointerUp);
     window.addEventListener('resize', this._onResize);
     document.addEventListener('visibilitychange', this._onVisibility);
 
@@ -544,6 +558,12 @@
   };
 
   WaterCaustics.prototype._onPointerDown = function (e) {
+    // Pointer capture keeps pointermove streaming to the canvas even if a
+    // touch drag slides the finger outside its bounds (mid-gesture),
+    // instead of the drag silently going dead.
+    if (this.canvas.setPointerCapture) {
+      try { this.canvas.setPointerCapture(e.pointerId); } catch (err) {}
+    }
     if (this.mode !== 'cursor') return;
     this._pointerDown = true;
     var pt = this._normalizedPoint(e);
@@ -552,8 +572,11 @@
     this._addRipple(pt, 1.4);
   };
 
-  WaterCaustics.prototype._onPointerUp = function () {
+  WaterCaustics.prototype._onPointerUp = function (e) {
     this._pointerDown = false;
+    if (e && this.canvas.releasePointerCapture) {
+      try { this.canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+    }
   };
 
   // ---------------------------------------------------------------------
@@ -748,6 +771,7 @@
       this.canvas.removeEventListener('pointerdown', this._onPointerDown);
     }
     window.removeEventListener('pointerup', this._onPointerUp);
+    window.removeEventListener('pointercancel', this._onPointerUp);
     window.removeEventListener('resize', this._onResize);
     document.removeEventListener('visibilitychange', this._onVisibility);
     if (this._resizeObserver) this._resizeObserver.disconnect();

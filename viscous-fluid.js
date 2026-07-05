@@ -154,6 +154,16 @@
     }
     this.canvas = canvas;
 
+    // Mobile: without touch-action:none, the browser treats a finger-down
+    // on the canvas as a scroll/pan gesture and never delivers pointermove
+    // for the drag. Setting it here (not just in demo CSS) means embeds
+    // get correct touch dragging for free. user-select/tap-highlight avoid
+    // incidental text selection / flash on tap.
+    canvas.style.touchAction = 'none';
+    canvas.style.webkitUserSelect = 'none';
+    canvas.style.userSelect = 'none';
+    canvas.style.webkitTapHighlightColor = 'transparent';
+
     this.mode = options.mode || 'cursor';
     this.colorA = hexToRgb01(options.colorA || '#7a1f2b');
     this.colorB = hexToRgb01(options.colorB || '#e8b4bc');

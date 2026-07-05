@@ -311,6 +311,16 @@
     this.canvas = canvas;
     this.host = el;
 
+    // Mobile: without touch-action:none, the browser treats a finger-down
+    // on the canvas as a scroll/pan gesture and never delivers pointermove
+    // for the drag. Setting it here (not just in demo CSS) means embeds
+    // get correct touch dragging for free. user-select/tap-highlight avoid
+    // incidental text selection / flash on tap.
+    canvas.style.touchAction = 'none';
+    canvas.style.webkitUserSelect = 'none';
+    canvas.style.userSelect = 'none';
+    canvas.style.webkitTapHighlightColor = 'transparent';
+
     this.mode = options.mode === 'ambient' ? 'ambient' : 'cursor';
     this._hexA = options.colorA || '#c9a86c';
     this._hexB = options.colorB || '#6d4f2f';
@@ -372,6 +382,10 @@
     canvas.addEventListener('pointermove', this._onPointerMove);
     canvas.addEventListener('pointerdown', this._onPointerDown);
     window.addEventListener('pointerup', this._onPointerUp);
+    // pointercancel fires when the browser steals the gesture mid-drag
+    // (e.g. a system edge-swipe on mobile) - treat exactly like pointerup
+    // so the "down" state never gets stuck true.
+    window.addEventListener('pointercancel', this._onPointerUp);
     canvas.addEventListener('pointerleave', this._onPointerLeave);
     window.addEventListener('resize', this._onResize);
 
@@ -576,15 +590,24 @@
   };
 
   SilkCloth.prototype._onPointerDown = function (e) {
+    // Pointer capture keeps pointermove streaming to the canvas even if a
+    // touch drag slides the finger outside its bounds (mid-gesture),
+    // instead of the drag silently going dead.
+    if (this.canvas.setPointerCapture) {
+      try { this.canvas.setPointerCapture(e.pointerId); } catch (err) {}
+    }
     this._pointerDown = true;
     this._onPointerMove(e);
   };
 
-  SilkCloth.prototype._onPointerUp = function () {
+  SilkCloth.prototype._onPointerUp = function (e) {
     this._pointerDown = false;
     if (this.pointerEmit === 'click') {
       this._targetPointer.active = false;
       this._smoothPointer.has = false;
+    }
+    if (e && this.canvas.releasePointerCapture) {
+      try { this.canvas.releasePointerCapture(e.pointerId); } catch (err) {}
     }
   };
 
@@ -713,6 +736,7 @@
       this.canvas.removeEventListener('pointerleave', this._onPointerLeave);
     }
     window.removeEventListener('pointerup', this._onPointerUp);
+    window.removeEventListener('pointercancel', this._onPointerUp);
     window.removeEventListener('resize', this._onResize);
     if (this._resizeObserver) this._resizeObserver.disconnect();
 
