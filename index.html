@@ -24,16 +24,6 @@
   }
   a { color: inherit; }
 
-  #fluidbg {
-    position: fixed;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    display: block;
-    z-index: 0;
-    pointer-events: none;
-  }
-
   .page {
     position: relative;
     z-index: 1;
@@ -176,8 +166,6 @@
 </head>
 <body>
 
-<canvas id="fluidbg" data-fluid-sim data-mode="ambient" data-background="light" data-color-a="#e7c9c2" data-color-b="#f7ece7" data-viscosity="0.55" data-speed="0.35" data-splat-radius="0.32"></canvas>
-
 <div class="page">
 
   <header class="hero">
@@ -288,6 +276,5 @@
 
 </div>
 
-<script src="fluid-sim.js"></script>
 </body>
 </html>

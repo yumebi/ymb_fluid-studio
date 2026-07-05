@@ -27,13 +27,17 @@
  *               created at and only its radius/fade evolve afterward - it
  *               never follows the pointer, so cursor mode reads as ripples
  *               appearing on the water rather than a creature trailing the
- *               mouse. Movement spawns a new ripple roughly every 150ms of
+ *               mouse. Movement spawns a new ripple roughly every 220ms of
  *               dwell time OR every ~0.35 world units of travel (whichever
  *               comes first), so a slow hover still drips steadily while a
  *               fast sweep does not spam an unbroken dense trail.
  *               pointerdown always spawns one larger/stronger ring
- *               immediately. Up to ~10 concurrent ripples; each expires ~3s
- *               after it starts.
+ *               immediately. Up to ~16 concurrent ripples; each ring
+ *               expands at a fixed world-unit speed and its lifetime is
+ *               sized dynamically from its spawn point so it visibly
+ *               travels all the way to the farthest canvas corner (fading
+ *               out gently only in the final ~15% of that trip) instead of
+ *               disappearing partway across.
  *   'ambient' - waves + noise only, no pointer interaction.
  *
  * background 'dark' | 'light' (default 'light'):
@@ -70,8 +74,21 @@
 (function (global) {
   'use strict';
 
-  var MAX_RIPPLES = 10;
-  var RIPPLE_LIFETIME = 3.0;
+  var MAX_RIPPLES = 16;
+  // Ring expansion speed in world units/second (post causticScale transform,
+  // same space as p in the fragment shader). Must match RIPPLE_SPEED in the
+  // GLSL source below - kept as a shared JS constant so _addRipple() can
+  // compute a per-ripple lifetime long enough for the ring to actually
+  // reach the farthest canvas corner from its spawn point, instead of the
+  // old fixed 3s lifetime (which, combined with a slow 0.35 units/s front,
+  // meant rings faded out long before reaching the edges of anything but a
+  // tiny canvas).
+  var RIPPLE_SPEED = 0.9;
+  // Extra seconds of travel time budgeted past the "reaches the farthest
+  // corner" point purely for the final fade envelope (see FADE_FRACTION in
+  // the shader) so the ring doesn't get chopped off mid-fade right as it
+  // arrives at the edge.
+  var RIPPLE_FADE_BUFFER = 0.6;
 
   // ---------------------------------------------------------------------
   // Shader sources
@@ -112,6 +129,7 @@
     'uniform vec3 uColorB;',
     'uniform int uRippleCount;',
     'uniform vec4 uRipples[' + MAX_RIPPLES + '];', // x, y, startTime (seconds), per-ripple strength
+    'uniform float uRippleMaxAge[' + MAX_RIPPLES + '];', // per-ripple lifetime (seconds), sized so the ring reaches the farthest canvas corner from its spawn point
     'uniform float uRippleStrength;',
 
     // ---- small original hash / value-noise ----------------------------
@@ -154,23 +172,43 @@
     // Height field h(p, t). Kept as a plain function (not inlined per
     // wave) so the ripple contribution can share the same evaluation
     // used for both the height and its finite-difference derivatives.
+    // Fraction of a ripple's total lifetime, at the end, during which the
+    // ring fades out (eases to zero right as/after it reaches the farthest
+    // corner). Before this window the amplitude only follows the gentle
+    // 1/sqrt(radius) spreading falloff (real-wave-like), so the ring stays
+    // clearly visible for the bulk of its trip across the canvas instead of
+    // the old exp(-age*0.75) decay that snuffed it out almost immediately.
+    'const float FADE_FRACTION = 0.15;',
     'float rippleHeight(vec2 p, float t) {',
     '  float sum = 0.0;',
     '  for (int i = 0; i < ' + MAX_RIPPLES + '; i++) {',
     '    if (i >= uRippleCount) break;',
     '    vec4 rp = uRipples[i];',
+    '    float maxAge = uRippleMaxAge[i];',
     '    float age = t - rp.z;',
-    '    if (age < 0.0 || age > ' + RIPPLE_LIFETIME.toFixed(1) + ') continue;',
+    '    if (age < 0.0 || age > maxAge) continue;',
     '    float dist = length(p - rp.xy);',
-    '    float front = age * 0.35;',
+    '    float front = age * ' + RIPPLE_SPEED.toFixed(2) + ';',
     '    float band = dist - front;',
-    // Ring spatial frequency is kept low enough (wavelength ~0.8 world units)
-    // that the caustic normal's finite-difference epsilon (~0.2-0.3 world
-    // units, see causticBrightness) can actually resolve the slope - a
-    // higher frequency here would alias against that fixed sampling step
+    // Ring spatial frequency is kept low enough (wavelength ~0.8 world
+    // units) that the caustic normal's finite-difference epsilon (~0.2-0.3
+    // world units, see causticBrightness) can actually resolve the slope -
+    // a higher frequency here would alias against that fixed sampling step
     // and the ripple would barely register in the refracted-normal Jacobian
     // even though the height field technically contains it.
-    '    float envelope = exp(-band * band * 9.0) * exp(-age * 0.75);',
+    '    float ringShape = exp(-band * band * 9.0);',
+    // Real-wave-like spreading: amplitude falls off ~1/sqrt(radius) as the
+    // wavefront's energy spreads over a growing circle, with a floor so it
+    // never fully vanishes before the end-of-life fade takes over.
+    '    float spread = 1.0 / sqrt(max(front, 0.35));',
+    '    spread = max(spread, 0.22);',
+    // Only fade in the final FADE_FRACTION of the ripple's life, and ease
+    // smoothly (smoothstep) rather than snap, so the ring reads as one
+    // clean expanding circle that gently dissolves right as it reaches the
+    // canvas edge rather than getting cut off or muddying into noise.
+    '    float lifeT = age / max(maxAge, 0.001);',
+    '    float fade = 1.0 - smoothstep(1.0 - FADE_FRACTION, 1.0, lifeT);',
+    '    float envelope = ringShape * spread * fade;',
     '    float ring = sin(band * 8.0 - age * 2.0);',
     '    sum += ring * envelope * rp.w;',
     '  }',
@@ -425,26 +463,66 @@
     return { x: x, y: y };
   };
 
+  // Farthest-corner distance (in the same world-unit space as ripple/pointer
+  // coordinates) from a spawn point, so a ripple's lifetime can be sized to
+  // let its ring actually reach the canvas edge before it disappears. World
+  // space here is the p-space rectangle used throughout the shader:
+  // half-width = aspect * causticScale * 1.25, half-height = causticScale *
+  // 1.25 (see the `p = (uv - 0.5) * vec2(aspect, 1.0) * uCausticScale * 2.5`
+  // line in the fragment shader's main()).
+  WaterCaustics.prototype._farthestCornerDist = function (pt) {
+    var rect = this.canvas.getBoundingClientRect();
+    var aspect = (rect.width || this.canvas.clientWidth || 1) / Math.max(rect.height || this.canvas.clientHeight || 1, 1);
+    var halfW = aspect * this.causticScale * 1.25;
+    var halfH = this.causticScale * 1.25;
+    var corners = [
+      { x: -halfW, y: -halfH }, { x: halfW, y: -halfH },
+      { x: -halfW, y: halfH }, { x: halfW, y: halfH }
+    ];
+    var maxDist = 0;
+    for (var i = 0; i < corners.length; i++) {
+      var dx = corners[i].x - pt.x;
+      var dy = corners[i].y - pt.y;
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (d > maxDist) maxDist = d;
+    }
+    return maxDist;
+  };
+
   WaterCaustics.prototype._addRipple = function (pt, strength) {
     if (this.mode !== 'cursor') return;
     if (this._ripples.length >= MAX_RIPPLES) this._ripples.shift();
     // Each ripple is a self-contained record (position, birth time,
-    // strength) - once spawned it never moves and never re-anchors to the
-    // pointer. That is what makes it read as a water drop rather than a
-    // creature trailing the cursor: the ring's centre is frozen at the
-    // instant it was created, and only its radius/fade evolve afterward
-    // (see rippleHeight() in the fragment shader, which keys purely off
-    // `age = t - start`).
-    this._ripples.push({ x: pt.x, y: pt.y, start: this._time, strength: strength });
+    // strength, lifetime) - once spawned it never moves and never
+    // re-anchors to the pointer. That is what makes it read as a water drop
+    // rather than a creature trailing the cursor: the ring's centre is
+    // frozen at the instant it was created, and only its radius/fade evolve
+    // afterward (see rippleHeight() in the fragment shader, which keys
+    // purely off `age = t - start`).
+    //
+    // maxAge is sized dynamically per-ripple: the ring travels at
+    // RIPPLE_SPEED world units/sec, so it needs (farthest corner distance /
+    // RIPPLE_SPEED) seconds to visibly sweep across the whole canvas, plus a
+    // small buffer so the final fade-out (see FADE_FRACTION in the shader)
+    // has room to play out at/after the edge instead of getting truncated.
+    var dist = this._farthestCornerDist(pt);
+    var maxAge = dist / RIPPLE_SPEED + RIPPLE_FADE_BUFFER;
+    this._ripples.push({ x: pt.x, y: pt.y, start: this._time, strength: strength, maxAge: maxAge });
   };
 
-  // Move-driven ripple spawning: a discrete "drop" every ~150ms of dwell
+  // Move-driven ripple spawning: a discrete "drop" every ~220ms of dwell
   // time OR every MOVE_SPAWN_DIST world units of cursor travel, whichever
   // comes first, so a slow-moving pointer still gets a steady drip while a
   // fast sweep does not spam a dense overlapping trail. This intentionally
   // does NOT track/redraw a ripple at the pointer's current position each
-  // frame - once spawned, a ring is anchored (see _addRipple).
-  var MOVE_SPAWN_INTERVAL = 0.15; // seconds
+  // frame - once spawned, a ring is anchored (see _addRipple). The interval
+  // is a bit longer than before (150ms -> 220ms) because rings now live
+  // much longer and travel much farther (full-canvas sweep instead of a
+  // ~3s fade), so the old cadence would let many more rings overlap in
+  // flight at once and read as a muddy cluster instead of clean individual
+  // wavefronts; MAX_RIPPLES was also raised (10 -> 16) to give the longer
+  // lifetime enough concurrent slots without starving a fast-moving pointer.
+  var MOVE_SPAWN_INTERVAL = 0.22; // seconds
   var MOVE_SPAWN_DIST = 0.35;     // world units (post causticScale transform)
 
   WaterCaustics.prototype._onPointerMove = function (e) {
@@ -486,7 +564,7 @@
     var alive = [];
     for (var i = 0; i < this._ripples.length; i++) {
       var r = this._ripples[i];
-      if (this._time - r.start <= RIPPLE_LIFETIME) alive.push(r);
+      if (this._time - r.start <= r.maxAge) alive.push(r);
     }
     this._ripples = alive;
   };
@@ -521,14 +599,17 @@
     // input. Use the bare key.
     if (n > 0 && u.uRipples !== undefined) {
       var flat = new Float32Array(MAX_RIPPLES * 4);
+      var maxAges = new Float32Array(MAX_RIPPLES);
       for (var i = 0; i < n; i++) {
         var r = this._ripples[i];
         flat[i * 4] = r.x;
         flat[i * 4 + 1] = r.y;
         flat[i * 4 + 2] = r.start;
         flat[i * 4 + 3] = r.strength;
+        maxAges[i] = r.maxAge;
       }
       gl.uniform4fv(u.uRipples, flat);
+      if (u.uRippleMaxAge !== undefined) gl.uniform1fv(u.uRippleMaxAge, maxAges);
     }
 
     gl.bindVertexArray(this._vao);

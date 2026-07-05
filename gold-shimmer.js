@@ -153,9 +153,16 @@
     '  if (aspect > 1.0) { clip.y *= aspect; } else { clip.x /= aspect; }',
     '  gl_Position = vec4(clip, 0.0, 1.0);',
     '',
-    // depth attenuation: near particles bigger and brighter
+    // depth attenuation: near particles bigger and brighter.
+    // Baseline flake diameter is ~9px at a 900px-tall reference canvas
+    // (uSize=1, aSize=1, depthScale=1); the previous formula omitted this
+    // base-size factor entirely and only ever produced sub-pixel point
+    // sizes (0.1-1.7px at typical viewport heights), which is why nothing
+    // was visible - gl.POINTS rounds/coverage-drops below ~1px regardless
+    // of the fragment shader's alpha math.
     '  float depthScale = 0.35 + aDepth * 1.15;',
-    '  float px = uSize * aSize * depthScale * (uResolution.y / 900.0);',
+    '  float basePx = 9.0;',
+    '  float px = uSize * aSize * depthScale * basePx * (uResolution.y / 900.0);',
     '  gl_PointSize = clamp(px, 1.0, 64.0);',
     '',
     // sharp intermittent twinkle: pow(sin, high exponent) is ~0 almost
