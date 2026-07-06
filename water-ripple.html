@@ -142,10 +142,15 @@
     </div>
     <div id="settings">
       <div class="btn-row">
+        <span class="row-label" style="font-size:11px; opacity:0.7;">背景</span>
+        <button id="btn-src-image" class="active">画像</button>
+        <button id="btn-src-gradient">グラデ</button>
+      </div>
+      <div class="btn-row" id="row-bg-tone">
         <button id="btn-bg-light" class="active">昼</button>
         <button id="btn-bg-dark">夜</button>
       </div>
-      <div class="colors-row">
+      <div class="colors-row" id="row-colors">
         <label>色A <input id="colorA" type="color" value="#bfe6e4"></label>
         <label>色B <input id="colorB" type="color" value="#4f9ea8"></label>
       </div>
@@ -177,9 +182,111 @@
 
 <script src="water-ripple.js"></script>
 <script>
+  // Builds a photo-like backdrop entirely at runtime with the 2D canvas API
+  // - no external image file, so no licensing concerns and the repo stays
+  // dependency-free. Layered soft radial gradients (dusk sky palette), a
+  // horizon line, a handful of blurred "bokeh" circles, a vignette, and a
+  // serif wordmark give the refraction pass real edges/detail to bend
+  // (a flat color would refract invisibly - you need contrast to see the
+  // wave distort it, which is the whole point of this demo section).
+  function buildPhotoBackdrop() {
+    var w = 1200, h = 800;
+    var c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    var ctx = c.getContext('2d');
+
+    // Dusk sky gradient.
+    var sky = ctx.createLinearGradient(0, 0, 0, h * 0.68);
+    sky.addColorStop(0, '#1b1440');
+    sky.addColorStop(0.45, '#5a3d7a');
+    sky.addColorStop(0.75, '#e07a5f');
+    sky.addColorStop(1, '#f4c98a');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, w, h * 0.68);
+
+    // Sun glow near the horizon.
+    var sun = ctx.createRadialGradient(w * 0.5, h * 0.62, 10, w * 0.5, h * 0.62, 260);
+    sun.addColorStop(0, 'rgba(255,235,200,0.95)');
+    sun.addColorStop(0.4, 'rgba(255,190,140,0.55)');
+    sun.addColorStop(1, 'rgba(255,190,140,0)');
+    ctx.fillStyle = sun;
+    ctx.fillRect(0, 0, w, h * 0.68);
+
+    // Soft blurred bokeh circles scattered across the sky.
+    var bokeh = [
+      [180, 140, 70, 'rgba(255,255,255,0.10)'],
+      [980, 90, 55, 'rgba(255,210,180,0.14)'],
+      [760, 230, 40, 'rgba(255,255,255,0.09)'],
+      [340, 320, 90, 'rgba(200,160,255,0.10)'],
+      [1080, 300, 65, 'rgba(255,255,255,0.08)'],
+      [520, 120, 30, 'rgba(255,255,255,0.12)']
+    ];
+    ctx.filter = 'blur(18px)';
+    bokeh.forEach(function (b) {
+      ctx.fillStyle = b[3];
+      ctx.beginPath();
+      ctx.arc(b[0], b[1], b[2], 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.filter = 'none';
+
+    // Water/floor below the horizon, mirroring the sky tones darker.
+    var water = ctx.createLinearGradient(0, h * 0.68, 0, h);
+    water.addColorStop(0, '#3a2452');
+    water.addColorStop(1, '#0c0820');
+    ctx.fillStyle = water;
+    ctx.fillRect(0, h * 0.68, w, h * 0.32);
+
+    // Horizon line glow.
+    var hz = ctx.createLinearGradient(0, h * 0.66, 0, h * 0.70);
+    hz.addColorStop(0, 'rgba(255,210,170,0)');
+    hz.addColorStop(0.5, 'rgba(255,210,170,0.45)');
+    hz.addColorStop(1, 'rgba(255,210,170,0)');
+    ctx.fillStyle = hz;
+    ctx.fillRect(0, h * 0.65, w, h * 0.06);
+
+    // A few vertical reflection streaks in the water band.
+    ctx.filter = 'blur(6px)';
+    for (var i = 0; i < 5; i++) {
+      var rx = w * 0.5 + (i - 2) * 46;
+      var rg = ctx.createLinearGradient(0, h * 0.68, 0, h);
+      rg.addColorStop(0, 'rgba(255,220,190,0.22)');
+      rg.addColorStop(1, 'rgba(255,220,190,0)');
+      ctx.fillStyle = rg;
+      ctx.fillRect(rx - 8, h * 0.68, 16, h * 0.32);
+    }
+    ctx.filter = 'none';
+
+    // Serif wordmark.
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '600 64px Georgia, "Times New Roman", serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.shadowColor = 'rgba(0,0,0,0.35)';
+    ctx.shadowBlur = 18;
+    ctx.fillText('AQUA SERUM', w * 0.5, h * 0.46);
+    ctx.shadowBlur = 0;
+    ctx.font = '400 20px Georgia, "Times New Roman", serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.letterSpacing = '0.35em';
+    ctx.fillText('N O C T U R N E   L A B S', w * 0.5, h * 0.52);
+    ctx.letterSpacing = '0px';
+
+    // Vignette.
+    var vig = ctx.createRadialGradient(w * 0.5, h * 0.5, h * 0.25, w * 0.5, h * 0.5, h * 0.85);
+    vig.addColorStop(0, 'rgba(0,0,0,0)');
+    vig.addColorStop(1, 'rgba(0,0,0,0.35)');
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, w, h);
+
+    return c;
+  }
+
   window.addEventListener('load', function () {
     var canvas = document.getElementById('water');
     var fx = canvas._waterRippleInstance;
+    var photoBackdrop = buildPhotoBackdrop();
 
     var DEFAULTS = {
       mode: 'cursor',
@@ -194,7 +301,8 @@
       specular: 1.0,
       tilePattern: false,
       pointerTrail: true,
-      pointerEmit: 'move'
+      pointerEmit: 'move',
+      useImage: true
     };
 
     var SLIDERS = [
@@ -236,6 +344,8 @@
       inputs[cfg.key] = { input: input, val: val, dec: cfg.dec };
     });
 
+    var useImage = !!DEFAULTS.useImage;
+
     function currentSettings() {
       var out = {
         mode: fx.mode,
@@ -244,7 +354,8 @@
         colorB: document.getElementById('colorB').value,
         tilePattern: fx.tilePattern,
         pointerTrail: fx.pointerTrail,
-        pointerEmit: fx.pointerEmit
+        pointerEmit: fx.pointerEmit,
+        useImage: useImage
       };
       SLIDERS.forEach(function (cfg) {
         out[cfg.key] = parseFloat(inputs[cfg.key].input.value);
@@ -267,6 +378,24 @@
       document.getElementById('btn-emit-click').classList.toggle('active', emit === 'click');
     }
 
+    // The image backdrop already carries its own palette/mood, so the
+    // 昼/夜 (light/dark) tone buttons and colorA/colorB pickers only make
+    // sense for the procedural gradient - hide them while an image is
+    // active rather than leaving controls on screen that visibly do
+    // nothing.
+    function setSourceButtons(useImg) {
+      document.getElementById('btn-src-image').classList.toggle('active', useImg);
+      document.getElementById('btn-src-gradient').classList.toggle('active', !useImg);
+      document.getElementById('row-bg-tone').style.display = useImg ? 'none' : 'flex';
+      document.getElementById('row-colors').style.display = useImg ? 'none' : 'flex';
+    }
+
+    function applyImageMode(useImg) {
+      useImage = useImg;
+      fx.setImage(useImg ? photoBackdrop : null);
+      setSourceButtons(useImg);
+    }
+
     function applySettings(s) {
       SLIDERS.forEach(function (cfg) {
         if (s[cfg.key] == null) return;
@@ -281,6 +410,7 @@
       fx.setParams(s);
       if (s.mode) setModeButtons(s.mode);
       if (s.background) setBgButtons(s.background);
+      if (s.useImage != null) applyImageMode(s.useImage);
     }
 
     document.getElementById('btn-cursor').addEventListener('click', function () {
@@ -313,10 +443,17 @@
       fx.setBackground('dark');
       setBgButtons('dark');
     });
+    document.getElementById('btn-src-image').addEventListener('click', function () {
+      applyImageMode(true);
+    });
+    document.getElementById('btn-src-gradient').addEventListener('click', function () {
+      applyImageMode(false);
+    });
     document.getElementById('btn-reset').addEventListener('click', function () {
       applySettings(DEFAULTS);
       setModeButtons(DEFAULTS.mode);
       setBgButtons(DEFAULTS.background);
+      applyImageMode(DEFAULTS.useImage);
     });
     document.getElementById('btn-copy').addEventListener('click', function () {
       var json = JSON.stringify(currentSettings(), null, 2);
@@ -330,6 +467,10 @@
     document.getElementById('colorB').addEventListener('input', function (e) {
       fx.setColors(document.getElementById('colorA').value, e.target.value);
     });
+
+    // Default the page to the image backdrop (that is what the demo is for);
+    // the gradient stays one click away via the 背景 toggle above.
+    applyImageMode(DEFAULTS.useImage);
 
     // UI hidden by default; ?ui=1 (or ?ui=true) reveals the settings panel + caption.
     var uiParam = new URLSearchParams(location.search).get('ui');

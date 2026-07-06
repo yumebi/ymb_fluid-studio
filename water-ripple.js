@@ -40,7 +40,19 @@
  *   colorB, with a soft large-scale noise variation and an optional faint
  *   floor-tile pattern) that the wave field refracts. 'dark' pairs with a
  *   brighter specular glint; 'light' keeps the glint softer so it doesn't
- *   blow out against a pale gradient.
+ *   blow out against a pale gradient. Ignored once an image background is
+ *   active (see imageSrc/image below) - it only affects the procedural path.
+ *
+ * imageSrc (string URL) / image (HTMLImageElement | HTMLCanvasElement):
+ *   Replaces the procedural gradient with a real image that the wave field
+ *   refracts - the classic "ripples over a photo" look. A URL loads async
+ *   (crossOrigin='anonymous'; the procedural background stays visible until
+ *   it decodes, and a failed load is a console.warn + stays procedural); an
+ *   already-drawable element/canvas uploads synchronously. The image is
+ *   displayed with cover-fit UV mapping (fills the canvas, aspect
+ *   preserved, overflow cropped - like CSS background-size:cover), and the
+ *   fit is recomputed automatically on resize. Call setImage(null) to
+ *   revert to the procedural gradient at any time.
  *
  * Pointer-interaction options (embeddable-behavior controls):
  *   pointerTrail (default true) - when false, pointermove never injects
@@ -55,11 +67,12 @@
  *   setDropStrength(0..3), setDropRadius(0.002..0.1), setRefraction(0..3),
  *   setSpecular(0..3), setColors(hexA, hexB), setMode('cursor'|'ambient'),
  *   setBackground('light'|'dark'), setTilePattern(bool),
- *   setPointerTrail(bool), setPointerEmit('move'|'click').
+ *   setPointerTrail(bool), setPointerEmit('move'|'click'),
+ *   setImage(srcOrElement|null).
  *   Or bulk: setParams({ mode, background, colorA, colorB, damping,
  *   waveSpeed, dropStrength, dropRadius, refraction, specular, tilePattern,
- *   pointerTrail, pointerEmit }) - unknown/absent keys are ignored, values
- *   are clamped.
+ *   pointerTrail, pointerEmit, imageSrc, image }) - unknown/absent keys are
+ *   ignored, values are clamped.
  *   Programmatic drop: drop(xNorm, yNorm, strength) injects a gaussian
  *   depression at a normalized (0..1, 0..1) canvas position immediately,
  *   independent of pointer/ambient triggering.
@@ -68,7 +81,7 @@
  *   data-mode, data-background, data-color-a, data-color-b,
  *   data-damping, data-wave-speed, data-drop-strength, data-drop-radius,
  *   data-refraction, data-specular, data-tile-pattern,
- *   data-pointer-trail, data-pointer-emit
+ *   data-pointer-trail, data-pointer-emit, data-image-src
  */
 (function (global) {
   'use strict';
@@ -188,13 +201,22 @@
 
   // Display pass: samples the simulated height field at canvas resolution,
   // derives a surface normal from its screen-space gradient, refracts a
-  // procedural background gradient by that normal's xy, and adds a
-  // specular glint from a fixed top-left light plus a slope-based
-  // darkening term. The refraction of the background is what sells the
-  // "looking through moving water" read rather than a flat texture.
+  // background by that normal's xy, and adds a specular glint from a fixed
+  // top-left light plus a slope-based darkening term. The refraction of the
+  // background is what sells the "looking through moving water" read rather
+  // than a flat texture.
+  //
+  // Two background sources selected by uUseImage:
+  //  - 0.0 (default): the original procedural noise-modulated gradient.
+  //  - 1.0: an uploaded image (uImage), sampled with a cover-fit uv (crop to
+  //    fill, preserve aspect - the jquery.ripples-style "photo behind
+  //    glass" look). uImageScale/uImageOffset remap uv into the image's
+  //    cropped region; they are recomputed in JS on resize/image-load, not
+  //    in the shader, so this pass stays a single mix.
   var DISPLAY_SRC = [
     FRAG_HEADER,
     'uniform sampler2D uHeight;',
+    'uniform sampler2D uImage;',
     'uniform vec2 uScreenTexel;',
     'uniform vec2 uResolution;',
     'uniform float uLightBg;',
@@ -203,6 +225,9 @@
     'uniform vec3 uColorA;',
     'uniform vec3 uColorB;',
     'uniform float uTilePattern;',
+    'uniform float uUseImage;',
+    'uniform vec2 uImageScale;',
+    'uniform vec2 uImageOffset;',
     NOISE_FN,
     // Procedural backdrop: large-scale noise-modulated gradient plus an
     // optional faint floor-tile grid, sampled at a (possibly refracted) uv.
@@ -221,6 +246,14 @@
     '  }',
     '  return col;',
     '}',
+    // Cover-fit sample: uv (0..1 canvas-space) -> image uv via precomputed
+    // scale/offset so the image fills the canvas without stretching,
+    // cropping whichever axis overflows. Clamped so refraction pushing the
+    // uv slightly past 0..1 reads the edge texel rather than wrapping.
+    'vec3 imageBackground(vec2 uv) {',
+    '  vec2 iuv = uv * uImageScale + uImageOffset;',
+    '  return texture(uImage, clamp(iuv, 0.0, 1.0)).rgb;',
+    '}',
     'void main() {',
     '  vec2 uv = gl_FragCoord.xy * uScreenTexel;',
     '  vec2 texel = uTexel;',
@@ -233,7 +266,9 @@
     '  float gy = (hT - hB) * 22.0;',
     '  vec3 normal = normalize(vec3(-gx, -gy, 1.0));',
     '  vec2 refractUv = uv + normal.xy * uRefraction * 0.06;',
-    '  vec3 col = background(clamp(refractUv, 0.0, 1.0));',
+    '  vec3 col = uUseImage > 0.5',
+    '    ? imageBackground(clamp(refractUv, 0.0, 1.0))',
+    '    : background(clamp(refractUv, 0.0, 1.0));',
     '  vec3 lightDir = normalize(vec3(-0.45, 0.6, 0.66));',
     '  vec3 viewDir = vec3(0.0, 0.0, 1.0);',
     '  vec3 halfDir = normalize(lightDir + viewDir);',
@@ -241,7 +276,11 @@
     '  float slope = clamp(abs(gx) + abs(gy), 0.0, 1.0);',
     '  col *= 1.0 - slope * 0.22;',
     '  vec3 glintTint = mix(vec3(1.0), uColorB, uLightBg * 0.25);',
-    '  col += spec * uSpecular * glintTint;',
+    // Specular glint is kept subtle over an image background (real photos
+    // already have their own bright regions - a strong additive glint would
+    // wash them out), so it is scaled down further when uUseImage is on.
+    '  float specMul = mix(1.0, 0.55, uUseImage);',
+    '  col += spec * uSpecular * specMul * glintTint;',
     '  fragColor = vec4(clamp(col, 0.0, 1.6), 1.0);',
     '}'
   ].join('\n');
@@ -399,6 +438,18 @@
     this.pointerEmit = options.pointerEmit === 'click' ? 'click' : 'move';
     this._pointerDown = false;
 
+    // Image-background state (see setImage()). uUseImage stays 0 until a
+    // texture actually finishes loading, so a page that requests an image
+    // shows the procedural gradient for the (usually single-frame) gap
+    // before the async load/decode completes rather than a blank/black
+    // frame.
+    this._imageTex = null;
+    this._imageScale = [1, 1];
+    this._imageOffset = [0, 0];
+    this._imageAspect = 1;
+    this._useImage = false;
+    this._imageLoadToken = 0;
+
     var gl = canvas.getContext('webgl2', { alpha: false, antialias: false });
     if (!gl) {
       console.warn('WaterRipple: WebGL2 not supported, effect disabled.');
@@ -454,6 +505,11 @@
     }
 
     this._allocate();
+    if (options.image != null) {
+      this.setImage(options.image);
+    } else if (options.imageSrc) {
+      this.setImage(options.imageSrc);
+    }
     this._raf = requestAnimationFrame(this._tick);
   }
 
@@ -488,6 +544,16 @@
     this._progUpdate = createProgram(gl, VERT_SRC, UPDATE_SRC);
     this._progDrop = createProgram(gl, VERT_SRC, DROP_SRC);
     this._progDisplay = createProgram(gl, VERT_SRC, DISPLAY_SRC);
+    // 1x1 placeholder bound to uImage whenever no image is active, so the
+    // sampler unit is always valid even though uUseImage=0 means the
+    // display shader never actually reads from it in that state.
+    this._placeholderImageTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this._placeholderImageTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
   };
 
   WaterRipple.prototype._allocate = function () {
@@ -508,6 +574,98 @@
     this.state = new FboPair(gl, simSize.w, simSize.h, gl.RG16F, gl.RG, this._halfFloat, this._filter);
 
     gl.viewport(0, 0, w, h);
+    this._updateImageFit();
+  };
+
+  // ---------------------------------------------------------------------
+  // Image background (cover-fit refraction target)
+  // ---------------------------------------------------------------------
+
+  // Recomputes the uImageScale/uImageOffset uniforms so the image covers
+  // the canvas (fills it completely, cropping whichever axis overflows)
+  // instead of stretching to the canvas aspect - the standard CSS
+  // background-size:cover behavior, done here as a UV remap since the
+  // shader has no notion of the source image's own aspect ratio.
+  WaterRipple.prototype._updateImageFit = function () {
+    if (!this._useImage) return;
+    var canvasAspect = this.canvas.width / Math.max(this.canvas.height, 1);
+    var imageAspect = this._imageAspect || 1;
+    var sx, sy, ox, oy;
+    if (imageAspect > canvasAspect) {
+      // image is relatively wider than the canvas -> its height fills the
+      // canvas height, crop left/right.
+      sy = 1;
+      sx = canvasAspect / imageAspect;
+      oy = 0;
+      ox = (1 - sx) * 0.5;
+    } else {
+      // image is relatively taller than the canvas -> its width fills the
+      // canvas width, crop top/bottom.
+      sx = 1;
+      sy = imageAspect / canvasAspect;
+      ox = 0;
+      oy = (1 - sy) * 0.5;
+    }
+    this._imageScale = [sx, sy];
+    this._imageOffset = [ox, oy];
+  };
+
+  // Accepts a URL string, an HTMLImageElement, or an HTMLCanvasElement.
+  // null/undefined reverts to the procedural gradient background. URL loads
+  // are async - the procedural background stays active (uUseImage=0) until
+  // the image finishes decoding, then swaps in atomically. A canvas/image
+  // element that is already loaded/drawable is uploaded synchronously.
+  WaterRipple.prototype.setImage = function (srcOrElement) {
+    var gl = this.gl;
+    if (!gl || this._fallbackProg) return;
+    var token = ++this._imageLoadToken; // invalidates any in-flight load below
+    if (srcOrElement == null) {
+      this._useImage = false;
+      return;
+    }
+    if (typeof srcOrElement === 'string') {
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      var self = this;
+      img.onload = function () {
+        if (token !== self._imageLoadToken || self._destroyed) return;
+        self._uploadImage(img, img.naturalWidth || img.width, img.naturalHeight || img.height);
+      };
+      img.onerror = function () {
+        if (token !== self._imageLoadToken) return;
+        console.warn('WaterRipple: failed to load image "' + srcOrElement + '", keeping procedural background.');
+      };
+      img.src = srcOrElement;
+      return;
+    }
+    // HTMLImageElement / HTMLCanvasElement - assume already drawable.
+    var w = srcOrElement.naturalWidth || srcOrElement.width;
+    var h = srcOrElement.naturalHeight || srcOrElement.height;
+    if (!w || !h) {
+      console.warn('WaterRipple: setImage() element has no dimensions yet, keeping procedural background.');
+      return;
+    }
+    this._uploadImage(srcOrElement, w, h);
+  };
+
+  WaterRipple.prototype._uploadImage = function (source, w, h) {
+    var gl = this.gl;
+    if (!this._imageTex) {
+      this._imageTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this._imageTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    } else {
+      gl.bindTexture(gl.TEXTURE_2D, this._imageTex);
+    }
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    this._imageAspect = w / Math.max(h, 1);
+    this._useImage = true;
+    this._updateImageFit();
   };
 
   // ---------------------------------------------------------------------
@@ -643,8 +801,15 @@
     gl.uniform1f(u.uTilePattern, this.tilePattern ? 1.0 : 0.0);
     gl.uniform3f(u.uColorA, this.colorA[0], this.colorA[1], this.colorA[2]);
     gl.uniform3f(u.uColorB, this.colorB[0], this.colorB[1], this.colorB[2]);
+    gl.uniform1f(u.uUseImage, this._useImage ? 1.0 : 0.0);
+    gl.uniform2f(u.uImageScale, this._imageScale[0], this._imageScale[1]);
+    gl.uniform2f(u.uImageOffset, this._imageOffset[0], this._imageOffset[1]);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.state.read.texture);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this._useImage && this._imageTex ? this._imageTex : this._placeholderImageTex);
+    gl.uniform1i(u.uHeight, 0);
+    gl.uniform1i(u.uImage, 1);
     gl.bindVertexArray(this._vao);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -765,6 +930,8 @@
     if (p.tilePattern != null) this.setTilePattern(p.tilePattern);
     if (p.pointerTrail != null) this.setPointerTrail(p.pointerTrail);
     if (p.pointerEmit != null) this.setPointerEmit(p.pointerEmit);
+    if (p.image !== undefined) this.setImage(p.image);
+    else if (p.imageSrc !== undefined) this.setImage(p.imageSrc);
   };
 
   WaterRipple.prototype.pause = function () {
@@ -795,6 +962,8 @@
     var gl = this.gl;
     if (gl) {
       if (this.state) this.state.dispose(gl);
+      if (this._imageTex) gl.deleteTexture(this._imageTex);
+      if (this._placeholderImageTex) gl.deleteTexture(this._placeholderImageTex);
       var progs = [this._progUpdate, this._progDrop, this._progDisplay, this._fallbackProg];
       for (var i = 0; i < progs.length; i++) {
         if (progs[i]) gl.deleteProgram(progs[i].program);
@@ -835,7 +1004,8 @@
         specular: num('data-specular'),
         tilePattern: el.hasAttribute('data-tile-pattern') ? bool('data-tile-pattern', false) : undefined,
         pointerTrail: el.hasAttribute('data-pointer-trail') ? bool('data-pointer-trail', true) : undefined,
-        pointerEmit: el.getAttribute('data-pointer-emit') || undefined
+        pointerEmit: el.getAttribute('data-pointer-emit') || undefined,
+        imageSrc: el.getAttribute('data-image-src') || undefined
       };
       el._waterRippleInstance = new WaterRipple(el, opts);
     }

@@ -43,14 +43,15 @@
  *   0 disables bloom entirely - the extra downsample/threshold/blur passes
  *   are skipped outright (no allocation, no draw calls) so gloss-mode pages
  *   pay zero cost. >0 downsamples the dye to a small FBO, keeps only the
- *   bright regions (threshold), blurs that with a cheap 2-pass separable
- *   box blur, and adds the result back additively in the display pass.
+ *   bright regions (threshold), blurs that with a cheap separable box blur
+ *   (3 horizontal+vertical passes for a wide, soft halo), and adds the
+ *   result back additively in the display pass.
  *
  * Runtime tuning:
  *   Named setters - setViscosity(0..1), setDyeDissipation(0..1),
  *   setVelocityDissipation(0..1), setPressureIterations(10..80),
  *   setViscosityIterations(0..50), setSplatRadius(0.01..1), setSpeed(0.05..5),
- *   setCurlStrength(0..50) (vorticity confinement, 0 = off),
+ *   setCurlStrength(0..80) (vorticity confinement, 0 = off),
  *   setColorMode('palette' | 'rainbow'), setPointerTrail(bool),
  *   setPointerEmit('move'|'click'), setDisplayMode('gloss'|'ink'),
  *   setBloomStrength(0..2),
@@ -308,15 +309,27 @@
     '  vec2 uv = gl_FragCoord.xy * uScreenTexel;',
     '  vec3 bloom = texture(uBloom, uv).rgb * uBloomStrength;',
     '  if (uDisplayMode > 0.5) {',
-    // Ink mode: no pseudo-normal / lighting at all - the raw dye color is
-    // the whole display, with a mild tone curve (soft shoulder via
-    // x/(1+x) so bright accumulated splats compress toward white instead
-    // of hard-clipping to a flat plateau) plus the additive bloom term.
+    // Ink mode: no pseudo-normal / lighting at all - the raw (possibly HDR,
+    // since splats can inject >1.0 dye values) color is the whole display.
+    // Before tone-mapping, boost saturation around the raw color's own
+    // luminance: this is what gives the reference's look of a white-hot
+    // core (luminance so high the color washes toward white on its own)
+    // surrounded by a saturated colored mid-ring, rather than everything
+    // fading to the same pale tint together. The saturation push is
+    // strongest at moderate luminance and fades out at the very top so the
+    // core still clips to white instead of clipping to an oversaturated
+    // primary.
     '    vec3 raw = texture(uDye, uv).rgb;',
-    '    vec3 toned = raw / (1.0 + raw * 0.55);',
+    '    float rawLum = dot(raw, vec3(0.299, 0.587, 0.114));',
+    '    float satBoost = 1.0 + 1.1 * smoothstep(0.0, 0.35, rawLum) * (1.0 - smoothstep(0.6, 1.6, rawLum));',
+    '    vec3 sat = rawLum + (raw - rawLum) * satBoost;',
+    // Soft-shoulder tone curve (x/(1+x*k)) - lower k than before so a wide
+    // HDR range compresses more gradually, giving a smooth falloff radius
+    // around bright splats instead of a tight hard-edged blob.
+    '    vec3 toned = sat / (1.0 + max(sat, 0.0) * 0.4);',
     '    vec3 col = toned + bloom;',
-    '    float lum = dot(raw, vec3(0.299, 0.587, 0.114));',
-    '    float alpha = smoothstep(0.015, 0.3, lum + dot(bloom, vec3(0.299, 0.587, 0.114)) * 0.5);',
+    '    float lum = rawLum;',
+    '    float alpha = smoothstep(0.012, 0.26, lum + dot(bloom, vec3(0.299, 0.587, 0.114)) * 0.5);',
     '    fragColor = vec4(clamp(col, 0.0, 1.0), alpha);',
     '    return;',
     '  }',
@@ -575,7 +588,7 @@
     this.splatRadius = options.splatRadius != null ? options.splatRadius : 0.25;
     this.speed = options.speed != null ? options.speed : 1;
     this.background = options.background === 'light' ? 'light' : 'dark';
-    this.curlStrength = options.curlStrength != null ? clamp(options.curlStrength, 0, 50) : 0;
+    this.curlStrength = options.curlStrength != null ? clamp(options.curlStrength, 0, 80) : 0;
     this.colorMode = options.colorMode === 'rainbow' ? 'rainbow' : 'palette';
     this.pointerTrail = options.pointerTrail !== false;
     this.pointerEmit = options.pointerEmit === 'click' ? 'click' : 'move';
@@ -612,7 +625,7 @@
 
     this._buildPrograms();
 
-    this._pointer = { x: 0.5, y: 0.5, dx: 0, dy: 0, moved: false, down: false };
+    this._pointer = { x: 0.5, y: 0.5, dx: 0, dy: 0, moved: false, down: false, justDown: false };
     this._lastPointer = { x: 0.5, y: 0.5 };
     this._emitters = this._makeEmitters();
 
@@ -833,35 +846,78 @@
     this.dye.swap();
   };
 
-  FluidSim.prototype._randomizedColor = function (speedFactor) {
+  // mul: overall intensity multiplier (default 0.35, matching the original
+  // hard-coded scale). Ink mode passes a higher value (>1 allowed - the dye
+  // FBO is RGBA16F so HDR values above 1.0 are stored intact) so splat cores
+  // accumulate bright enough to read as white-hot once the display shader's
+  // tone curve compresses them back down, rather than topping out at a dim
+  // pastel like the original gloss-tuned 0.35 ceiling produced.
+  FluidSim.prototype._randomizedColor = function (speedFactor, mul) {
+    mul = mul != null ? mul : 0.35;
     if (this.colorMode === 'rainbow') {
       // hue drifts with sim time so consecutive splats walk the spectrum
       var rgb = hueToRgb01(this._time * 0.15 + Math.random() * 0.06);
-      return [rgb[0] * 0.35, rgb[1] * 0.35, rgb[2] * 0.35];
+      return [rgb[0] * mul, rgb[1] * mul, rgb[2] * mul];
     }
     var t = clamp(0.25 + Math.random() * 0.5 + speedFactor * 0.25, 0, 1);
     var wobble = (Math.random() - 0.5) * 0.12;
     var r = clamp(this.colorA[0] + (this.colorB[0] - this.colorA[0]) * t + wobble, 0, 1);
     var g = clamp(this.colorA[1] + (this.colorB[1] - this.colorA[1]) * t + wobble, 0, 1);
     var b = clamp(this.colorA[2] + (this.colorB[2] - this.colorA[2]) * t + wobble, 0, 1);
-    return [r * 0.35, g * 0.35, b * 0.35];
+    return [r * mul, g * mul, b * mul];
+  };
+
+  // Ring of outward-radial velocity splats around a point, used to make a
+  // pointerdown in ink mode read as a bloom bursting outward rather than a
+  // single static blob. Purely a velocity disturbance (skipDye=true on every
+  // ring splat) - the dye itself is still laid down once, at full intensity,
+  // by the caller; this just gives the fluid sim an initial outward push so
+  // the vorticity confinement pass has something to curl into tendrils.
+  FluidSim.prototype._burstVelocityRing = function (xNorm, yNorm, force) {
+    var count = 6;
+    var ringRadius = this.splatRadius * 0.09 + 0.01;
+    var aspect = this.canvas.width / this.canvas.height;
+    for (var i = 0; i < count; i++) {
+      var ang = (i / count) * Math.PI * 2 + Math.random() * 0.3;
+      var ox = Math.cos(ang) * ringRadius;
+      var oy = Math.sin(ang) * ringRadius / Math.max(aspect, 0.0001);
+      var vx = Math.cos(ang) * force;
+      var vy = Math.sin(ang) * force;
+      this._splat(clamp(xNorm + ox, 0, 1), clamp(yNorm + oy, 0, 1), vx, vy, [0, 0, 0], true);
+    }
   };
 
   FluidSim.prototype._injectPointer = function (dt) {
     var p = this._pointer;
     if (!p.moved) return;
     p.moved = false;
+    var isInk = this.displayMode === 'ink';
     // pointerEmit='click': a plain hover-move never reaches here at all
     // (see _onPointerMove, which only sets p.moved while p.down is true),
     // so no extra gating is needed in this function for that option.
     var speed = Math.sqrt(p.dx * p.dx + p.dy * p.dy) / Math.max(dt, 0.0001);
     var force = clamp(speed * 0.9, 0, 12);
-    var color = this._randomizedColor(clamp(speed * 0.5, 0, 1));
+    // Ink mode splats run hotter (up to ~2.5x) so the accumulated dye core
+    // clips through the display shader's tone curve into a white-hot center
+    // - the "luminous burst" look of the reference. A fresh pointerdown
+    // (p.justDown) gets the strongest hit; a plain move/drag is milder so a
+    // dragged trail doesn't uniformly saturate to white.
+    var inkMul = p.down ? (p.justDown ? 2.5 : 1.4) : 1.0;
+    var colorMul = isInk ? 0.35 * inkMul : 0.35;
+    var color = this._randomizedColor(clamp(speed * 0.5, 0, 1), colorMul);
     var mulX = p.down ? 1.6 : 1.0;
     // pointerTrail=false: inject velocity only so the pointer stirs the
     // existing dye field without laying down a persistent trail of new
     // color along its path.
     this._splat(p.x, p.y, p.dx * force, p.dy * force, [color[0] * mulX, color[1] * mulX, color[2] * mulX], !this.pointerTrail);
+
+    // Radial velocity burst: only on the frame a pointerdown actually lands
+    // (not every subsequent drag move), and only in ink mode - the gloss
+    // path is left byte-identical to its pre-existing behavior.
+    if (isInk && p.justDown && this.pointerTrail) {
+      this._burstVelocityRing(p.x, p.y, clamp(4 + force * 0.6, 4, 10));
+    }
+    p.justDown = false;
   };
 
   FluidSim.prototype._updateAmbient = function (dt) {
@@ -1042,8 +1098,12 @@
   // Bright-pass downsample + 2-pass separable box blur (run BLOOM_BLUR_PASSES
   // times for a wider glow). Entirely skipped when bloomStrength is ~0, so
   // gloss pages that never touch bloom issue zero extra draw calls here.
-  var BLOOM_THRESHOLD = 0.35;
-  var BLOOM_BLUR_PASSES = 2;
+  // Threshold lowered and an extra blur pass added (3 vs the original 2) so
+  // the halo picks up more of the mid-brightness dye and spreads over a
+  // wider radius at the same small (0.25x dye res) blur-target size, rather
+  // than a tight/bright ring right at the splat edge.
+  var BLOOM_THRESHOLD = 0.28;
+  var BLOOM_BLUR_PASSES = 3;
 
   FluidSim.prototype._renderBloom = function () {
     var gl = this.gl;
@@ -1188,6 +1248,7 @@
     this._pointer.dy = (Math.random() - 0.5) * 0.02;
     this._pointer.down = true;
     this._pointer.moved = true;
+    this._pointer.justDown = true;
     this._lastPointer.x = pt.x;
     this._lastPointer.y = pt.y;
   };
@@ -1264,7 +1325,7 @@
   };
 
   FluidSim.prototype.setCurlStrength = function (v) {
-    this.curlStrength = clamp(v, 0, 50);
+    this.curlStrength = clamp(v, 0, 80);
   };
 
   FluidSim.prototype.setColorMode = function (m) {

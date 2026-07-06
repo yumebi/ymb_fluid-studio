@@ -127,10 +127,10 @@
 <div id="stage">
   <canvas id="fluid" data-fluid-sim
     data-mode="cursor" data-color-mode="rainbow" data-background="dark"
-    data-display-mode="ink" data-bloom-strength="0.8"
-    data-curl-strength="30" data-viscosity="0" data-viscosity-iterations="0"
-    data-velocity-dissipation="0.99" data-dye-dissipation="0.985"
-    data-splat-radius="0.2" data-speed="1.6" data-pressure-iterations="25"></canvas>
+    data-display-mode="ink" data-bloom-strength="1.2"
+    data-curl-strength="45" data-viscosity="0" data-viscosity-iterations="0"
+    data-velocity-dissipation="0.996" data-dye-dissipation="0.99"
+    data-splat-radius="0.2" data-speed="1.6" data-pressure-iterations="28"></canvas>
   <div class="panel" id="panel">
     <div class="row-top">
       <button id="btn-cursor" class="active">カーソル追従</button>
@@ -177,17 +177,17 @@
       colorMode: 'rainbow',
       background: 'dark',
       displayMode: 'ink',
-      bloomStrength: 0.8,
+      bloomStrength: 1.2,
       colorA: '#4a0f16',
       colorB: '#f0b8ae',
       viscosity: 0,
-      dyeDissipation: 0.985,
-      velocityDissipation: 0.99,
-      pressureIterations: 25,
+      dyeDissipation: 0.99,
+      velocityDissipation: 0.996,
+      pressureIterations: 28,
       viscosityIterations: 0,
       splatRadius: 0.2,
       speed: 1.6,
-      curlStrength: 30,
+      curlStrength: 45,
       pointerTrail: true,
       pointerEmit: 'move'
     };
@@ -201,7 +201,7 @@
       { key: 'viscosityIterations', label: '粘性反復',   min: 0,    max: 50,   step: 1,     dec: 0 },
       { key: 'splatRadius',         label: '注入半径',   min: 0.05, max: 0.6,  step: 0.01,  dec: 2 },
       { key: 'speed',               label: '速度',       min: 0.2,  max: 3,    step: 0.05,  dec: 2 },
-      { key: 'curlStrength',        label: 'カール(渦)', min: 0,    max: 50,   step: 1,     dec: 0 }
+      { key: 'curlStrength',        label: 'カール(渦)', min: 0,    max: 80,   step: 1,     dec: 0 }
     ];
 
     // data attributes cover most of the above; apply the full default set
