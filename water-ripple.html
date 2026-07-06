@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>波動方程式リップル — WebGL2デモ</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #f2fafa;
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
+    color: #204b4a;
+    overflow: hidden;
+  }
+  #stage {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+  canvas#water {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .panel {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    z-index: 10;
+    background: rgba(255,255,255,0.82);
+    border: 1px solid #cdeae6;
+    padding: 12px 14px;
+    border-radius: 10px;
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+    backdrop-filter: blur(4px);
+    box-shadow: 0 2px 12px rgba(37,120,115,0.10);
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    width: 268px;
+  }
+  .panel.show {
+    display: flex;
+  }
+  .row-top {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .panel button {
+    background: #eafbf9;
+    color: #1c7d76;
+    border: 1px solid #a9dcd6;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .panel button.active {
+    background: #1c7d76;
+    color: #eafbf9;
+    border-color: #1c7d76;
+  }
+  #settings {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .section-label {
+    font-size: 11px;
+    opacity: 0.65;
+    margin-top: 4px;
+  }
+  .colors-row {
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+    align-items: center;
+  }
+  .colors-row label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .colors-row input[type=color] {
+    width: 30px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    background: none;
+  }
+  .slider-row {
+    display: grid;
+    grid-template-columns: 74px 1fr 46px;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+  }
+  .slider-row input[type=range] {
+    width: 100%;
+    height: 14px;
+    accent-color: #1c7d76;
+  }
+  .slider-row .val {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+  }
+  .btn-row {
+    display: flex;
+    gap: 8px;
+  }
+  .caption {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    opacity: 0.55;
+    z-index: 10;
+    white-space: nowrap;
+    display: none;
+  }
+  .caption.show {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="water" data-water-ripple data-mode="cursor" data-background="light" data-color-a="#bfe6e4" data-color-b="#4f9ea8"></canvas>
+  <div class="panel" id="panel">
+    <div class="row-top">
+      <button id="btn-cursor" class="active">カーソル追従</button>
+      <button id="btn-ambient">アンビエント</button>
+    </div>
+    <div id="settings">
+      <div class="btn-row">
+        <button id="btn-bg-light" class="active">昼</button>
+        <button id="btn-bg-dark">夜</button>
+      </div>
+      <div class="colors-row">
+        <label>色A <input id="colorA" type="color" value="#bfe6e4"></label>
+        <label>色B <input id="colorB" type="color" value="#4f9ea8"></label>
+      </div>
+      <div class="section-label">波紋の設定</div>
+      <div id="sliders"></div>
+      <div class="btn-row">
+        <label style="font-size:11px; display:flex; align-items:center; gap:4px;">
+          <input id="chk-tile" type="checkbox"> 床タイル模様
+        </label>
+      </div>
+      <div class="btn-row">
+        <label style="font-size:11px; display:flex; align-items:center; gap:4px;">
+          <input id="chk-pointer-trail" type="checkbox" checked> 尾を引く
+        </label>
+      </div>
+      <div class="btn-row">
+        <span class="row-label" style="font-size:11px; opacity:0.7;">発生</span>
+        <button id="btn-emit-move" class="active">移動</button>
+        <button id="btn-emit-click">クリック</button>
+      </div>
+      <div class="btn-row">
+        <button id="btn-reset">リセット</button>
+        <button id="btn-copy">コピー</button>
+      </div>
+    </div>
+  </div>
+  <div class="caption">波動方程式リップル &mdash; WebGL2 / オリジナル実装</div>
+</div>
+
+<script src="water-ripple.js"></script>
+<script>
+  window.addEventListener('load', function () {
+    var canvas = document.getElementById('water');
+    var fx = canvas._waterRippleInstance;
+
+    var DEFAULTS = {
+      mode: 'cursor',
+      background: 'light',
+      colorA: '#bfe6e4',
+      colorB: '#4f9ea8',
+      damping: 0.985,
+      waveSpeed: 0.3,
+      dropStrength: 1.0,
+      dropRadius: 0.015,
+      refraction: 1.0,
+      specular: 1.0,
+      tilePattern: false,
+      pointerTrail: true,
+      pointerEmit: 'move'
+    };
+
+    var SLIDERS = [
+      { key: 'damping',      label: '減衰',     min: 0.9,   max: 0.999, step: 0.001, dec: 3 },
+      { key: 'waveSpeed',    label: '伝播速度', min: 0.05,  max: 0.5,   step: 0.01,  dec: 2 },
+      { key: 'dropStrength', label: '滴の強さ', min: 0,     max: 3,     step: 0.05,  dec: 2 },
+      { key: 'dropRadius',   label: '滴の半径', min: 0.002, max: 0.1,   step: 0.002, dec: 3 },
+      { key: 'refraction',   label: '屈折',     min: 0,     max: 3,     step: 0.05,  dec: 2 },
+      { key: 'specular',     label: 'ツヤ',     min: 0,     max: 3,     step: 0.05,  dec: 2 }
+    ];
+
+    var inputs = {};
+    var slidersHost = document.getElementById('sliders');
+    SLIDERS.forEach(function (cfg) {
+      var row = document.createElement('div');
+      row.className = 'slider-row';
+      var name = document.createElement('span');
+      name.textContent = cfg.label;
+      var input = document.createElement('input');
+      input.type = 'range';
+      input.min = cfg.min;
+      input.max = cfg.max;
+      input.step = cfg.step;
+      input.value = DEFAULTS[cfg.key];
+      var val = document.createElement('span');
+      val.className = 'val';
+      val.textContent = Number(DEFAULTS[cfg.key]).toFixed(cfg.dec);
+      input.addEventListener('input', function () {
+        var v = parseFloat(input.value);
+        val.textContent = v.toFixed(cfg.dec);
+        var patch = {};
+        patch[cfg.key] = v;
+        fx.setParams(patch);
+      });
+      row.appendChild(name);
+      row.appendChild(input);
+      row.appendChild(val);
+      slidersHost.appendChild(row);
+      inputs[cfg.key] = { input: input, val: val, dec: cfg.dec };
+    });
+
+    function currentSettings() {
+      var out = {
+        mode: fx.mode,
+        background: fx.background,
+        colorA: document.getElementById('colorA').value,
+        colorB: document.getElementById('colorB').value,
+        tilePattern: fx.tilePattern,
+        pointerTrail: fx.pointerTrail,
+        pointerEmit: fx.pointerEmit
+      };
+      SLIDERS.forEach(function (cfg) {
+        out[cfg.key] = parseFloat(inputs[cfg.key].input.value);
+      });
+      return out;
+    }
+
+    function setModeButtons(mode) {
+      document.getElementById('btn-cursor').classList.toggle('active', mode === 'cursor');
+      document.getElementById('btn-ambient').classList.toggle('active', mode === 'ambient');
+    }
+
+    function setBgButtons(bg) {
+      document.getElementById('btn-bg-light').classList.toggle('active', bg === 'light');
+      document.getElementById('btn-bg-dark').classList.toggle('active', bg === 'dark');
+    }
+
+    function setEmitButtons(emit) {
+      document.getElementById('btn-emit-move').classList.toggle('active', emit !== 'click');
+      document.getElementById('btn-emit-click').classList.toggle('active', emit === 'click');
+    }
+
+    function applySettings(s) {
+      SLIDERS.forEach(function (cfg) {
+        if (s[cfg.key] == null) return;
+        inputs[cfg.key].input.value = s[cfg.key];
+        inputs[cfg.key].val.textContent = Number(s[cfg.key]).toFixed(cfg.dec);
+      });
+      if (s.colorA) document.getElementById('colorA').value = s.colorA;
+      if (s.colorB) document.getElementById('colorB').value = s.colorB;
+      if (s.tilePattern != null) document.getElementById('chk-tile').checked = s.tilePattern;
+      if (s.pointerTrail != null) document.getElementById('chk-pointer-trail').checked = s.pointerTrail;
+      if (s.pointerEmit != null) setEmitButtons(s.pointerEmit);
+      fx.setParams(s);
+      if (s.mode) setModeButtons(s.mode);
+      if (s.background) setBgButtons(s.background);
+    }
+
+    document.getElementById('btn-cursor').addEventListener('click', function () {
+      fx.setMode('cursor');
+      setModeButtons('cursor');
+    });
+    document.getElementById('btn-ambient').addEventListener('click', function () {
+      fx.setMode('ambient');
+      setModeButtons('ambient');
+    });
+    document.getElementById('chk-tile').addEventListener('change', function (e) {
+      fx.setTilePattern(e.target.checked);
+    });
+    document.getElementById('chk-pointer-trail').addEventListener('change', function (e) {
+      fx.setPointerTrail(e.target.checked);
+    });
+    document.getElementById('btn-emit-move').addEventListener('click', function () {
+      fx.setPointerEmit('move');
+      setEmitButtons('move');
+    });
+    document.getElementById('btn-emit-click').addEventListener('click', function () {
+      fx.setPointerEmit('click');
+      setEmitButtons('click');
+    });
+    document.getElementById('btn-bg-light').addEventListener('click', function () {
+      fx.setBackground('light');
+      setBgButtons('light');
+    });
+    document.getElementById('btn-bg-dark').addEventListener('click', function () {
+      fx.setBackground('dark');
+      setBgButtons('dark');
+    });
+    document.getElementById('btn-reset').addEventListener('click', function () {
+      applySettings(DEFAULTS);
+      setModeButtons(DEFAULTS.mode);
+      setBgButtons(DEFAULTS.background);
+    });
+    document.getElementById('btn-copy').addEventListener('click', function () {
+      var json = JSON.stringify(currentSettings(), null, 2);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(json);
+      }
+    });
+    document.getElementById('colorA').addEventListener('input', function (e) {
+      fx.setColors(e.target.value, document.getElementById('colorB').value);
+    });
+    document.getElementById('colorB').addEventListener('input', function (e) {
+      fx.setColors(document.getElementById('colorA').value, e.target.value);
+    });
+
+    // UI hidden by default; ?ui=1 (or ?ui=true) reveals the settings panel + caption.
+    var uiParam = new URLSearchParams(location.search).get('ui');
+    var showUi = uiParam === '1' || uiParam === 'true';
+    document.getElementById('panel').classList.toggle('show', showUi);
+    document.querySelector('.caption').classList.toggle('show', showUi);
+  });
+</script>
+</body>
+</html>

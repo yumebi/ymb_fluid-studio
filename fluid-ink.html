@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FluidSim インクフローデモ</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0a0a12;
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
+    color: #e8e6f0;
+    overflow: hidden;
+  }
+  #stage {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+  canvas#fluid {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .panel {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    z-index: 10;
+    background: rgba(10,10,20,0.5);
+    padding: 12px 14px;
+    border-radius: 10px;
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+    backdrop-filter: blur(4px);
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    width: 264px;
+  }
+  .panel.show {
+    display: flex;
+  }
+  .row-top {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .panel button {
+    background: #1c1830;
+    color: #e8e6f0;
+    border: 1px solid #4b3f8f;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .panel button.active {
+    background: #4b3f8f;
+  }
+  #settings {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .colors-row {
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+    align-items: center;
+  }
+  .colors-row label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .colors-row input[type=color] {
+    width: 30px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    background: none;
+  }
+  .slider-row {
+    display: grid;
+    grid-template-columns: 74px 1fr 42px;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+  }
+  .slider-row input[type=range] {
+    width: 100%;
+    height: 14px;
+    accent-color: #4b3f8f;
+  }
+  .slider-row .val {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+  }
+  .btn-row {
+    display: flex;
+    gap: 8px;
+  }
+  .caption {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    opacity: 0.6;
+    z-index: 10;
+    white-space: nowrap;
+    display: none;
+  }
+  .caption.show {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="fluid" data-fluid-sim
+    data-mode="cursor" data-color-mode="rainbow" data-background="dark"
+    data-display-mode="ink" data-bloom-strength="0.8"
+    data-curl-strength="30" data-viscosity="0" data-viscosity-iterations="0"
+    data-velocity-dissipation="0.99" data-dye-dissipation="0.985"
+    data-splat-radius="0.2" data-speed="1.6" data-pressure-iterations="25"></canvas>
+  <div class="panel" id="panel">
+    <div class="row-top">
+      <button id="btn-cursor" class="active">カーソル追従</button>
+      <button id="btn-ambient">アンビエント</button>
+    </div>
+    <div id="settings">
+      <div class="btn-row">
+        <span class="row-label" style="font-size:11px; opacity:0.7;">表示モード</span>
+        <button id="btn-mode-ink" class="active">インク</button>
+        <button id="btn-mode-gloss">グロス</button>
+      </div>
+      <div class="colors-row">
+        <label>色A <input id="colorA" type="color" value="#4a0f16"></label>
+        <label>色B <input id="colorB" type="color" value="#f0b8ae"></label>
+      </div>
+      <div id="sliders"></div>
+      <div class="btn-row">
+        <label style="font-size:11px; display:flex; align-items:center; gap:4px;">
+          <input id="chk-pointer-trail" type="checkbox" checked> 尾を引く
+        </label>
+      </div>
+      <div class="btn-row">
+        <span class="row-label" style="font-size:11px; opacity:0.7;">発生</span>
+        <button id="btn-emit-move" class="active">移動</button>
+        <button id="btn-emit-click">クリック</button>
+      </div>
+      <div class="btn-row">
+        <button id="btn-reset">リセット</button>
+        <button id="btn-copy">コピー</button>
+      </div>
+    </div>
+  </div>
+  <div class="caption">インクフロー(グロー) &mdash; WebGL2 / オリジナル実装</div>
+</div>
+
+<script src="fluid-sim.js"></script>
+<script>
+  window.addEventListener('load', function () {
+    var canvas = document.getElementById('fluid');
+    var fx = canvas._fluidSimInstance;
+
+    var DEFAULTS = {
+      mode: 'cursor',
+      colorMode: 'rainbow',
+      background: 'dark',
+      displayMode: 'ink',
+      bloomStrength: 0.8,
+      colorA: '#4a0f16',
+      colorB: '#f0b8ae',
+      viscosity: 0,
+      dyeDissipation: 0.985,
+      velocityDissipation: 0.99,
+      pressureIterations: 25,
+      viscosityIterations: 0,
+      splatRadius: 0.2,
+      speed: 1.6,
+      curlStrength: 30,
+      pointerTrail: true,
+      pointerEmit: 'move'
+    };
+
+    var SLIDERS = [
+      { key: 'bloomStrength',       label: 'ブルーム',   min: 0,    max: 2,    step: 0.05,  dec: 2 },
+      { key: 'viscosity',           label: '粘度',       min: 0,    max: 1,    step: 0.01,  dec: 2 },
+      { key: 'dyeDissipation',      label: '残留(色)',   min: 0.90, max: 1.00, step: 0.001, dec: 3 },
+      { key: 'velocityDissipation', label: '残留(速度)', min: 0.90, max: 1.00, step: 0.001, dec: 3 },
+      { key: 'pressureIterations',  label: '圧力反復',   min: 10,   max: 80,   step: 1,     dec: 0 },
+      { key: 'viscosityIterations', label: '粘性反復',   min: 0,    max: 50,   step: 1,     dec: 0 },
+      { key: 'splatRadius',         label: '注入半径',   min: 0.05, max: 0.6,  step: 0.01,  dec: 2 },
+      { key: 'speed',               label: '速度',       min: 0.2,  max: 3,    step: 0.05,  dec: 2 },
+      { key: 'curlStrength',        label: 'カール(渦)', min: 0,    max: 50,   step: 1,     dec: 0 }
+    ];
+
+    // data attributes cover most of the above; apply the full default set
+    // once so the JSON-driven "reset" and slider values are all in sync.
+    fx.setParams(DEFAULTS);
+
+    var inputs = {};
+    var slidersHost = document.getElementById('sliders');
+    SLIDERS.forEach(function (cfg) {
+      var row = document.createElement('div');
+      row.className = 'slider-row';
+      var name = document.createElement('span');
+      name.textContent = cfg.label;
+      var input = document.createElement('input');
+      input.type = 'range';
+      input.min = cfg.min;
+      input.max = cfg.max;
+      input.step = cfg.step;
+      input.value = DEFAULTS[cfg.key];
+      var val = document.createElement('span');
+      val.className = 'val';
+      val.textContent = Number(DEFAULTS[cfg.key]).toFixed(cfg.dec);
+      input.addEventListener('input', function () {
+        var v = parseFloat(input.value);
+        val.textContent = v.toFixed(cfg.dec);
+        var patch = {};
+        patch[cfg.key] = v;
+        fx.setParams(patch);
+      });
+      row.appendChild(name);
+      row.appendChild(input);
+      row.appendChild(val);
+      slidersHost.appendChild(row);
+      inputs[cfg.key] = { input: input, val: val, dec: cfg.dec };
+    });
+
+    function currentSettings() {
+      var out = {
+        mode: fx.mode,
+        colorMode: fx.colorMode,
+        background: fx.background,
+        displayMode: fx.displayMode,
+        colorA: document.getElementById('colorA').value,
+        colorB: document.getElementById('colorB').value,
+        pointerTrail: fx.pointerTrail,
+        pointerEmit: fx.pointerEmit
+      };
+      SLIDERS.forEach(function (cfg) {
+        out[cfg.key] = parseFloat(inputs[cfg.key].input.value);
+      });
+      return out;
+    }
+
+    function setModeButtons(mode) {
+      document.getElementById('btn-cursor').classList.toggle('active', mode === 'cursor');
+      document.getElementById('btn-ambient').classList.toggle('active', mode === 'ambient');
+    }
+
+    function setDisplayModeButtons(mode) {
+      document.getElementById('btn-mode-ink').classList.toggle('active', mode !== 'gloss');
+      document.getElementById('btn-mode-gloss').classList.toggle('active', mode === 'gloss');
+    }
+
+    function setEmitButtons(emit) {
+      document.getElementById('btn-emit-move').classList.toggle('active', emit !== 'click');
+      document.getElementById('btn-emit-click').classList.toggle('active', emit === 'click');
+    }
+
+    function applyDefaults() {
+      SLIDERS.forEach(function (cfg) {
+        inputs[cfg.key].input.value = DEFAULTS[cfg.key];
+        inputs[cfg.key].val.textContent = Number(DEFAULTS[cfg.key]).toFixed(cfg.dec);
+      });
+      document.getElementById('colorA').value = DEFAULTS.colorA;
+      document.getElementById('colorB').value = DEFAULTS.colorB;
+      document.getElementById('chk-pointer-trail').checked = DEFAULTS.pointerTrail;
+      setEmitButtons(DEFAULTS.pointerEmit);
+      fx.setParams(DEFAULTS);
+      setModeButtons(DEFAULTS.mode);
+      setDisplayModeButtons(DEFAULTS.displayMode);
+    }
+
+    document.getElementById('btn-cursor').addEventListener('click', function () {
+      fx.setMode('cursor');
+      setModeButtons('cursor');
+    });
+    document.getElementById('btn-ambient').addEventListener('click', function () {
+      fx.setMode('ambient');
+      setModeButtons('ambient');
+    });
+    document.getElementById('btn-mode-ink').addEventListener('click', function () {
+      fx.setDisplayMode('ink');
+      setDisplayModeButtons('ink');
+    });
+    document.getElementById('btn-mode-gloss').addEventListener('click', function () {
+      fx.setDisplayMode('gloss');
+      setDisplayModeButtons('gloss');
+    });
+    document.getElementById('chk-pointer-trail').addEventListener('change', function (e) {
+      fx.setPointerTrail(e.target.checked);
+    });
+    document.getElementById('btn-emit-move').addEventListener('click', function () {
+      fx.setPointerEmit('move');
+      setEmitButtons('move');
+    });
+    document.getElementById('btn-emit-click').addEventListener('click', function () {
+      fx.setPointerEmit('click');
+      setEmitButtons('click');
+    });
+    document.getElementById('btn-reset').addEventListener('click', applyDefaults);
+    document.getElementById('btn-copy').addEventListener('click', function () {
+      var json = JSON.stringify(currentSettings(), null, 2);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(json);
+      }
+    });
+    document.getElementById('colorA').addEventListener('input', function (e) {
+      fx.setColors(e.target.value, document.getElementById('colorB').value);
+    });
+    document.getElementById('colorB').addEventListener('input', function (e) {
+      fx.setColors(document.getElementById('colorA').value, e.target.value);
+    });
+
+    // UI hidden by default; ?ui=1 (or ?ui=true) reveals the settings panel + caption.
+    var uiParam = new URLSearchParams(location.search).get('ui');
+    var showUi = uiParam === '1' || uiParam === 'true';
+    document.getElementById('panel').classList.toggle('show', showUi);
+    document.querySelector('.caption').classList.toggle('show', showUi);
+  });
+</script>
+</body>
+</html>

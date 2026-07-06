@@ -30,20 +30,37 @@
  *     no dye); only pointerdown and drag-while-down inject into the sim.
  *     Applies on top of pointerTrail.
  *
+ * displayMode ('gloss' default | 'ink'):
+ *   'gloss' - the original pipeline: a pseudo-normal is reconstructed from
+ *     the dye luminance gradient and lit like a thick glossy liquid
+ *     (specular + fresnel rim + alpha ramp). Untouched by the 'ink' work.
+ *   'ink'   - renders the dye color directly with only a mild tone curve,
+ *     no pseudo-normal lighting at all - flat glowing colored smoke rather
+ *     than a lit liquid surface. Pairs well with bloom (below) for a
+ *     colorful glowing "ink in water" look on a dark background.
+ *
+ * bloomStrength (0..2, default 0):
+ *   0 disables bloom entirely - the extra downsample/threshold/blur passes
+ *   are skipped outright (no allocation, no draw calls) so gloss-mode pages
+ *   pay zero cost. >0 downsamples the dye to a small FBO, keeps only the
+ *   bright regions (threshold), blurs that with a cheap 2-pass separable
+ *   box blur, and adds the result back additively in the display pass.
+ *
  * Runtime tuning:
  *   Named setters - setViscosity(0..1), setDyeDissipation(0..1),
  *   setVelocityDissipation(0..1), setPressureIterations(10..80),
  *   setViscosityIterations(0..50), setSplatRadius(0.01..1), setSpeed(0.05..5),
  *   setCurlStrength(0..50) (vorticity confinement, 0 = off),
  *   setColorMode('palette' | 'rainbow'), setPointerTrail(bool),
- *   setPointerEmit('move'|'click'),
+ *   setPointerEmit('move'|'click'), setDisplayMode('gloss'|'ink'),
+ *   setBloomStrength(0..2),
  *   setDisplayParams({ specular: 0..2, shininess: 8..200, fresnel: 0..1,
  *   transparency: 0..1 }).
  *   Or bulk: setParams({ mode, background, colorA, colorB, colorMode,
  *   viscosity, dyeDissipation, velocityDissipation, pressureIterations,
  *   viscosityIterations, splatRadius, speed, curlStrength, pointerTrail,
- *   pointerEmit, specular, shininess, fresnel, transparency })
- *   - unknown/absent keys are ignored, values are clamped.
+ *   pointerEmit, displayMode, bloomStrength, specular, shininess, fresnel,
+ *   transparency }) - unknown/absent keys are ignored, values are clamped.
  *
  * Auto-init data attributes (on the [data-fluid-sim] element):
  *   data-mode, data-background, data-color-mode, data-color-a, data-color-b,
@@ -52,6 +69,7 @@
  *   data-dye-dissipation, data-velocity-dissipation,
  *   data-pressure-iterations, data-viscosity-iterations,
  *   data-pointer-trail, data-pointer-emit,
+ *   data-display-mode, data-bloom-strength,
  *   data-specular, data-shininess, data-fresnel, data-transparency
  */
 (function (global) {
@@ -266,17 +284,42 @@
   // keeping specular highlights and the slope rim at full strength - that
   // is what makes a clear gel readable: you see the light on it, not the
   // pigment in it. Every uTransparency term is a no-op at 0.
+  // uDisplayMode selects the whole shading path: 0.0 = original "gloss"
+  // branch below (untouched, byte-identical output for the same dye state
+  // as before this feature existed), 1.0 = "ink" - skip the pseudo-normal
+  // lighting entirely and just tone-map the raw dye color. uBloomStrength
+  // (0 default) additively blends in a pre-blurred bright-pass texture
+  // (uBloom) sampled at screen uv; at 0 strength the term is multiplied
+  // away so a caller who never enables bloom sees no difference even if
+  // uBloom happens to be bound to a stale/empty texture.
   var DISPLAY_SRC = [
     FRAG_HEADER,
     'uniform sampler2D uDye;',
+    'uniform sampler2D uBloom;',
     'uniform vec2 uScreenTexel;',
     'uniform float uLightBg;',
     'uniform float uSpecular;',
     'uniform float uShininess;',
     'uniform float uFresnel;',
     'uniform float uTransparency;',
+    'uniform float uDisplayMode;',
+    'uniform float uBloomStrength;',
     'void main() {',
     '  vec2 uv = gl_FragCoord.xy * uScreenTexel;',
+    '  vec3 bloom = texture(uBloom, uv).rgb * uBloomStrength;',
+    '  if (uDisplayMode > 0.5) {',
+    // Ink mode: no pseudo-normal / lighting at all - the raw dye color is
+    // the whole display, with a mild tone curve (soft shoulder via
+    // x/(1+x) so bright accumulated splats compress toward white instead
+    // of hard-clipping to a flat plateau) plus the additive bloom term.
+    '    vec3 raw = texture(uDye, uv).rgb;',
+    '    vec3 toned = raw / (1.0 + raw * 0.55);',
+    '    vec3 col = toned + bloom;',
+    '    float lum = dot(raw, vec3(0.299, 0.587, 0.114));',
+    '    float alpha = smoothstep(0.015, 0.3, lum + dot(bloom, vec3(0.299, 0.587, 0.114)) * 0.5);',
+    '    fragColor = vec4(clamp(col, 0.0, 1.0), alpha);',
+    '    return;',
+    '  }',
     '  vec2 off = uTexel * 2.0;',
     '  vec3 c = texture(uDye, uv).rgb;',
     '  float lC = dot(c, vec3(0.299, 0.587, 0.114));',
@@ -327,6 +370,7 @@
     '    float hi = max(min(spec * uSpecular, 1.0), fresnel * uFresnel);',
     '    alpha = max(alpha, liquid * min(hi, 1.0) * uTransparency);',
     '  }',
+    '  col += bloom;', // no-op at bloomStrength 0.0 (bloom is exactly vec3(0.0) above)
     '  fragColor = vec4(clamp(col, 0.0, 1.0), alpha);',
     '}'
   ].join('\n');
@@ -339,6 +383,50 @@
     '  vec2 uv = gl_FragCoord.xy * uTexel;',
     '  vec3 col = mix(uColorA, uColorB, uv.y);',
     '  fragColor = vec4(col, 0.5);',
+    '}'
+  ].join('\n');
+
+  // ---------------------------------------------------------------------
+  // Bloom passes (only ever built/run when bloomStrength > 0)
+  // ---------------------------------------------------------------------
+
+  // Downsample-with-threshold: sampled straight from the dye FBO (uses
+  // uScreenTexel-style dye-space uv, so it reads at the dye's own texel
+  // size, i.e. this pass IS the downsample - it renders into a much
+  // smaller target than uDye without a separate resize step) and keeps
+  // only the energy above uThreshold, softly knee'd rather than hard-cut
+  // so bright blobs don't get a visible ring at the cutoff.
+  var BLOOM_THRESHOLD_SRC = [
+    FRAG_HEADER,
+    'uniform sampler2D uDye;',
+    'uniform float uThreshold;',
+    'void main() {',
+    '  vec2 uv = gl_FragCoord.xy * uTexel;',
+    '  vec3 c = texture(uDye, uv).rgb;',
+    '  float lum = dot(c, vec3(0.299, 0.587, 0.114));',
+    '  float knee = uThreshold * 0.5;',
+    '  float w = clamp((lum - uThreshold + knee) / max(knee * 2.0, 0.0001), 0.0, 1.0);',
+    '  w = w * w * (3.0 - 2.0 * w);',
+    '  fragColor = vec4(c * w, 1.0);',
+    '}'
+  ].join('\n');
+
+  // Separable box blur, 2 taps per direction per iteration (5-tap total
+  // per axis) - cheap stand-in for a gaussian blur; run twice (once per
+  // axis) per iteration via uDirection, and the whole pair can be looped
+  // for a wider, softer glow without any extra allocation.
+  var BLOOM_BLUR_SRC = [
+    FRAG_HEADER,
+    'uniform sampler2D uSource;',
+    'uniform vec2 uDirection;', // (1,0) or (0,1) times texel size, set from JS
+    'void main() {',
+    '  vec2 uv = gl_FragCoord.xy * uTexel;',
+    '  vec3 sum = texture(uSource, uv).rgb * 0.4;',
+    '  sum += texture(uSource, uv + uDirection * 1.0).rgb * 0.24;',
+    '  sum += texture(uSource, uv - uDirection * 1.0).rgb * 0.24;',
+    '  sum += texture(uSource, uv + uDirection * 2.0).rgb * 0.06;',
+    '  sum += texture(uSource, uv - uDirection * 2.0).rgb * 0.06;',
+    '  fragColor = vec4(sum, 1.0);',
     '}'
   ].join('\n');
 
@@ -491,6 +579,8 @@
     this.colorMode = options.colorMode === 'rainbow' ? 'rainbow' : 'palette';
     this.pointerTrail = options.pointerTrail !== false;
     this.pointerEmit = options.pointerEmit === 'click' ? 'click' : 'move';
+    this.displayMode = options.displayMode === 'ink' ? 'ink' : 'gloss';
+    this.bloomStrength = options.bloomStrength != null ? clamp(options.bloomStrength, 0, 2) : 0;
     var dp = options.displayParams || {};
     this.displayParams = {
       specular: dp.specular != null ? dp.specular : 0.9,
@@ -596,7 +686,48 @@
     this._progCurl = createProgram(gl, VERT_SRC, CURL_SRC);
     this._progVorticity = createProgram(gl, VERT_SRC, VORTICITY_SRC);
     this._progDisplay = createProgram(gl, VERT_SRC, DISPLAY_SRC);
+    // Bloom programs are cheap to link and always built, but the FBOs they
+    // draw into are only ever allocated in _ensureBloomTargets() the first
+    // time bloomStrength becomes > 0 - so a page that never enables bloom
+    // never pays for the extra render targets, only two tiny program
+    // objects (no different from the cost of any other unused program here).
+    this._progBloomThreshold = createProgram(gl, VERT_SRC, BLOOM_THRESHOLD_SRC);
+    this._progBloomBlur = createProgram(gl, VERT_SRC, BLOOM_BLUR_SRC);
+    // 1x1 black texture bound to uBloom whenever bloom is disabled/not yet
+    // allocated, so the display shader's "* uBloomStrength" (0 at rest)
+    // multiplies a real, always-valid texture rather than leaving the
+    // sampler unit unbound (which is undefined behavior in WebGL).
+    this._blackTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this._blackTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
     this._vao = gl.createVertexArray();
+  };
+
+  // Allocates (once, lazily) the small downsample + ping-pong blur FBOs
+  // used only by the bloom pass. Sized off the current dye resolution so a
+  // resize naturally invalidates and reallocates them via _allocate().
+  FluidSim.prototype._ensureBloomTargets = function () {
+    if (this._bloomDown) return;
+    var gl = this.gl;
+    var w = Math.max(1, Math.round(this.dyeSize.w * 0.25));
+    var h = Math.max(1, Math.round(this.dyeSize.h * 0.25));
+    this._bloomSize = { w: w, h: h };
+    this._bloomDown = FboPair.makeTarget(gl, w, h, gl.RGBA16F, gl.RGBA, this._halfFloat, this._filter);
+    this._bloomPing = new FboPair(gl, w, h, gl.RGBA16F, gl.RGBA, this._halfFloat, this._filter);
+  };
+
+  FluidSim.prototype._disposeBloomTargets = function () {
+    if (!this._bloomDown) return;
+    var gl = this.gl;
+    gl.deleteTexture(this._bloomDown.texture);
+    gl.deleteFramebuffer(this._bloomDown.fbo);
+    this._bloomPing.dispose(gl);
+    this._bloomDown = null;
+    this._bloomPing = null;
   };
 
   FluidSim.prototype._makeEmitters = function () {
@@ -644,6 +775,7 @@
       gl.deleteFramebuffer(this.curlTarget.fbo);
     }
     if (this.pressure) this.pressure.dispose(gl);
+    this._disposeBloomTargets();
 
     this.velocity = new FboPair(gl, simSize.w, simSize.h, gl.RG16F, gl.RG, this._halfFloat, this._filter);
     this.pressure = new FboPair(gl, simSize.w, simSize.h, gl.R16F, gl.RED, this._halfFloat, this._filter);
@@ -907,20 +1039,82 @@
     this.dye.swap();
   };
 
+  // Bright-pass downsample + 2-pass separable box blur (run BLOOM_BLUR_PASSES
+  // times for a wider glow). Entirely skipped when bloomStrength is ~0, so
+  // gloss pages that never touch bloom issue zero extra draw calls here.
+  var BLOOM_THRESHOLD = 0.35;
+  var BLOOM_BLUR_PASSES = 2;
+
+  FluidSim.prototype._renderBloom = function () {
+    var gl = this.gl;
+    this._ensureBloomTargets();
+    var bw = this._bloomSize.w, bh = this._bloomSize.h;
+
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(this._vao);
+
+    // Downsample + threshold, dye -> small bloomDown target.
+    gl.useProgram(this._progBloomThreshold.program);
+    var ut = this._progBloomThreshold.uniforms;
+    gl.uniform2f(ut.uTexel, 1 / bw, 1 / bh);
+    gl.uniform1i(ut.uDye, 0);
+    gl.uniform1f(ut.uThreshold, BLOOM_THRESHOLD);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.dye.read.texture);
+    gl.viewport(0, 0, bw, bh);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._bloomDown.fbo);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // Separable blur ping-pong: horizontal then vertical, repeated
+    // BLOOM_BLUR_PASSES times for a softer/wider glow without a bigger
+    // kernel. Source for the very first horizontal pass is bloomDown;
+    // afterward it reads/writes the bloomPing ping-pong pair.
+    gl.useProgram(this._progBloomBlur.program);
+    var ub = this._progBloomBlur.uniforms;
+    gl.uniform2f(ub.uTexel, 1 / bw, 1 / bh);
+    gl.uniform1i(ub.uSource, 0);
+    var source = this._bloomDown.texture;
+    for (var i = 0; i < BLOOM_BLUR_PASSES; i++) {
+      gl.uniform2f(ub.uDirection, 1 / bw, 0.0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, source);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this._bloomPing.write.fbo);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      this._bloomPing.swap();
+
+      gl.uniform2f(ub.uDirection, 0.0, 1 / bh);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this._bloomPing.read.texture);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this._bloomPing.write.fbo);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      this._bloomPing.swap();
+      source = this._bloomPing.read.texture;
+    }
+    this._bloomResultTexture = this._bloomPing.read.texture;
+  };
+
   FluidSim.prototype._render = function () {
     var gl = this.gl;
+    var bloomOn = this.bloomStrength > 0.001;
+    if (bloomOn) this._renderBloom();
+
     gl.useProgram(this._progDisplay.program);
     var u = this._progDisplay.uniforms;
     gl.uniform2f(u.uTexel, 1 / this.dye.w, 1 / this.dye.h);
     gl.uniform2f(u.uScreenTexel, 1 / this.canvas.width, 1 / this.canvas.height);
     gl.uniform1i(u.uDye, 0);
+    gl.uniform1i(u.uBloom, 1);
     gl.uniform1f(u.uLightBg, this.background === 'light' ? 1.0 : 0.0);
     gl.uniform1f(u.uSpecular, this.displayParams.specular);
     gl.uniform1f(u.uShininess, this.displayParams.shininess);
     gl.uniform1f(u.uFresnel, this.displayParams.fresnel);
     gl.uniform1f(u.uTransparency, this.displayParams.transparency);
+    gl.uniform1f(u.uDisplayMode, this.displayMode === 'ink' ? 1.0 : 0.0);
+    gl.uniform1f(u.uBloomStrength, bloomOn ? this.bloomStrength : 0.0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.dye.read.texture);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bloomOn ? this._bloomResultTexture : this._blackTex);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.bindVertexArray(this._vao);
@@ -1089,6 +1283,18 @@
     this.pointerEmit = v === 'click' ? 'click' : 'move';
   };
 
+  // 'gloss' (default): original pseudo-normal lit liquid display. 'ink':
+  // raw dye color with a mild tone curve, no lighting - see DISPLAY_SRC.
+  FluidSim.prototype.setDisplayMode = function (m) {
+    this.displayMode = m === 'ink' ? 'ink' : 'gloss';
+  };
+
+  // 0 (default) fully disables bloom - the downsample/threshold/blur
+  // passes are skipped in _render() entirely, not just zeroed out.
+  FluidSim.prototype.setBloomStrength = function (v) {
+    this.bloomStrength = clamp(v, 0, 2);
+  };
+
   // Partial update: any of { specular: 0..2, shininess: 8..200,
   // fresnel: 0..1, transparency: 0..1 }.
   FluidSim.prototype.setDisplayParams = function (p) {
@@ -1119,6 +1325,8 @@
     if (p.colorMode != null) this.setColorMode(p.colorMode);
     if (p.pointerTrail != null) this.setPointerTrail(p.pointerTrail);
     if (p.pointerEmit != null) this.setPointerEmit(p.pointerEmit);
+    if (p.displayMode != null) this.setDisplayMode(p.displayMode);
+    if (p.bloomStrength != null) this.setBloomStrength(p.bloomStrength);
     this.setDisplayParams(p);
   };
 
@@ -1170,9 +1378,12 @@
         gl.deleteTexture(this.curlTarget.texture);
         gl.deleteFramebuffer(this.curlTarget.fbo);
       }
+      this._disposeBloomTargets();
+      if (this._blackTex) gl.deleteTexture(this._blackTex);
       var progs = [this._progAdvect, this._progJacobi, this._progDivergence,
         this._progGradient, this._progSplat, this._progClear, this._progCurl,
-        this._progVorticity, this._progDisplay, this._fallbackProg];
+        this._progVorticity, this._progDisplay, this._progBloomThreshold,
+        this._progBloomBlur, this._fallbackProg];
       for (var i = 0; i < progs.length; i++) {
         if (progs[i]) gl.deleteProgram(progs[i].program);
       }
@@ -1215,6 +1426,8 @@
         viscosityIterations: num('data-viscosity-iterations'),
         pointerTrail: el.hasAttribute('data-pointer-trail') ? bool('data-pointer-trail', true) : undefined,
         pointerEmit: el.getAttribute('data-pointer-emit') || undefined,
+        displayMode: el.getAttribute('data-display-mode') || undefined,
+        bloomStrength: num('data-bloom-strength'),
         displayParams: {
           specular: num('data-specular'),
           shininess: num('data-shininess'),
