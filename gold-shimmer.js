@@ -357,6 +357,8 @@
     this._onPointerUp = this._onPointerUp.bind(this);
     this._onResize = this._onResize.bind(this);
     this._onVisibility = this._onVisibility.bind(this);
+    this._onContextLost = this._onContextLost.bind(this);
+    this._onContextRestored = this._onContextRestored.bind(this);
     this._tick = this._tick.bind(this);
 
     canvas.addEventListener('pointermove', this._onPointerMove);
@@ -374,6 +376,33 @@
       this._resizeObserver = new ResizeObserver(this._onResize);
       this._resizeObserver.observe(canvas);
     }
+
+    // Stop drawing while the canvas is scrolled out of view, so an embedded
+    // effect does not keep burning GPU / battery behind the page.
+    this._offscreen = false;
+    this._intersectionObserver = null;
+    if (typeof IntersectionObserver !== 'undefined') {
+      this._intersectionObserver = new IntersectionObserver(function (entries) {
+        this._offscreen = !entries[entries.length - 1].isIntersecting;
+        if (!this._offscreen) this._lastFrameTime = 0;
+      }.bind(this));
+      this._intersectionObserver.observe(canvas);
+    }
+
+    // Visitors who ask the OS for reduced motion get one still frame instead of
+    // the continuous shimmer. Pass respectReducedMotion: false to opt out.
+    this._reducedMotionQuery = null;
+    this._stillDrawn = false;
+    if (options.respectReducedMotion !== false && typeof window.matchMedia === 'function') {
+      this._reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    }
+
+    // A GPU reset or a driver crash can drop the WebGL context. preventDefault()
+    // on 'webglcontextlost' is what allows it to come back; on restore every GL
+    // resource has to be rebuilt.
+    this._contextLost = false;
+    canvas.addEventListener('webglcontextlost', this._onContextLost);
+    canvas.addEventListener('webglcontextrestored', this._onContextRestored);
 
     this._allocate();
     this._raf = requestAnimationFrame(this._tick);
@@ -429,6 +458,7 @@
     this.canvas.width = w;
     this.canvas.height = h;
     gl.viewport(0, 0, w, h);
+    this._stillDrawn = false;
   };
 
   // ---------------------------------------------------------------------
@@ -487,16 +517,23 @@
 
   GoldShimmer.prototype._tick = function (now) {
     if (this._destroyed) return;
-    if (this._paused || document.hidden) {
+    if (this._paused || document.hidden || this._offscreen || this._contextLost) {
+      this._raf = requestAnimationFrame(this._tick);
+      return;
+    }
+    var reduced = !!(this._reducedMotionQuery && this._reducedMotionQuery.matches);
+    if (reduced && this._stillDrawn) {
+      // Reduced motion: the single still frame is already on screen.
       this._raf = requestAnimationFrame(this._tick);
       return;
     }
     var dt = this._lastFrameTime ? (now - this._lastFrameTime) / 1000 : 1 / 60;
     dt = clamp(dt, 0, 1 / 30);
     this._lastFrameTime = now;
-    this._time += dt;
+    if (!reduced) this._time += dt;
 
     this._render();
+    this._stillDrawn = reduced;
 
     this._raf = requestAnimationFrame(this._tick);
   };
@@ -565,6 +602,25 @@
 
   GoldShimmer.prototype._onVisibility = function () {
     // Loop already checks document.hidden each frame; nothing else needed.
+  };
+
+  GoldShimmer.prototype._onContextLost = function (e) {
+    e.preventDefault();
+    this._contextLost = true;
+  };
+
+  GoldShimmer.prototype._onContextRestored = function () {
+    if (this._destroyed || !this.gl) return;
+    var gl = this.gl;
+    // Everything created before the loss is invalid: build it again.
+    this._prog = createProgram(gl, VERT_SRC, FRAG_SRC);
+    this._vao = gl.createVertexArray();
+    this._vbo = null;
+    this._buildParticles();
+    this._allocate();
+    this._lastFrameTime = 0;
+    this._stillDrawn = false;
+    this._contextLost = false;
   };
 
   // ---------------------------------------------------------------------
@@ -664,6 +720,11 @@
     window.removeEventListener('resize', this._onResize);
     document.removeEventListener('visibilitychange', this._onVisibility);
     if (this._resizeObserver) this._resizeObserver.disconnect();
+    if (this._intersectionObserver) this._intersectionObserver.disconnect();
+    if (this.canvas) {
+      this.canvas.removeEventListener('webglcontextlost', this._onContextLost);
+      this.canvas.removeEventListener('webglcontextrestored', this._onContextRestored);
+    }
 
     var gl = this.gl;
     if (gl) {

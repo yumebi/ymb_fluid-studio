@@ -640,6 +640,8 @@
     this._onPointerUp = this._onPointerUp.bind(this);
     this._onResize = this._onResize.bind(this);
     this._onVisibility = this._onVisibility.bind(this);
+    this._onContextLost = this._onContextLost.bind(this);
+    this._onContextRestored = this._onContextRestored.bind(this);
     this._tick = this._tick.bind(this);
 
     canvas.addEventListener('pointermove', this._onPointerMove);
@@ -657,6 +659,34 @@
       this._resizeObserver = new ResizeObserver(this._onResize);
       this._resizeObserver.observe(canvas);
     }
+
+    // Stop simulating while the canvas is scrolled out of view, so an embedded
+    // effect does not keep burning GPU / battery behind the page.
+    this._offscreen = false;
+    this._intersectionObserver = null;
+    if (typeof IntersectionObserver !== 'undefined') {
+      this._intersectionObserver = new IntersectionObserver(function (entries) {
+        this._offscreen = !entries[entries.length - 1].isIntersecting;
+        // Do not count the time spent off screen as one huge frame on return.
+        if (!this._offscreen) this._lastFrameTime = 0;
+      }.bind(this));
+      this._intersectionObserver.observe(canvas);
+    }
+
+    // Visitors who ask the OS for reduced motion do not get the self-running
+    // 'ambient' mode; the effect then only reacts to their own pointer.
+    // Pass respectReducedMotion: false to opt out.
+    this._reducedMotionQuery = null;
+    if (options.respectReducedMotion !== false && typeof window.matchMedia === 'function') {
+      this._reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    }
+
+    // A GPU reset or a driver crash can drop the WebGL context. preventDefault()
+    // on 'webglcontextlost' is what allows it to come back; on restore every GL
+    // resource has to be rebuilt.
+    this._contextLost = false;
+    canvas.addEventListener('webglcontextlost', this._onContextLost);
+    canvas.addEventListener('webglcontextrestored', this._onContextRestored);
 
     this._allocate();
     this._raf = requestAnimationFrame(this._tick);
@@ -995,7 +1025,7 @@
     }
 
     // 3. Splats (pointer / ambient emitters).
-    if (this.mode === 'ambient') {
+    if (this.mode === 'ambient' && !this._prefersReducedMotion()) {
       this._updateAmbient(dt);
     } else {
       this._injectPointer(dt);
@@ -1187,7 +1217,7 @@
 
   FluidSim.prototype._tick = function (now) {
     if (this._destroyed) return;
-    if (this._paused || document.hidden) {
+    if (this._paused || document.hidden || this._offscreen || this._contextLost) {
       this._raf = requestAnimationFrame(this._tick);
       return;
     }
@@ -1272,6 +1302,38 @@
 
   FluidSim.prototype._onVisibility = function () {
     // Loop already checks document.hidden each frame; nothing else needed.
+  };
+
+  FluidSim.prototype._prefersReducedMotion = function () {
+    return !!(this._reducedMotionQuery && this._reducedMotionQuery.matches);
+  };
+
+  FluidSim.prototype._onContextLost = function (e) {
+    e.preventDefault();
+    this._contextLost = true;
+  };
+
+  FluidSim.prototype._onContextRestored = function () {
+    if (this._destroyed || !this.gl) return;
+    var gl = this.gl;
+    // Extensions have to be enabled again after a restore.
+    var floatExt = gl.getExtension('EXT_color_buffer_float');
+    this._linearExt = !!gl.getExtension('OES_texture_float_linear');
+    this._manualFilter = !this._linearExt;
+    this._filter = this._linearExt ? gl.LINEAR : gl.NEAREST;
+    if (!floatExt) {
+      console.warn('FluidSim: EXT_color_buffer_float missing after context restore, effect disabled.');
+      return;
+    }
+    // Everything created before the loss is invalid: drop the references (the
+    // old objects cannot be deleted) and build the programs and targets again.
+    this.velocity = this.dye = this.pressure = this.divergence = null;
+    this.viscositySource = this.curlTarget = null;
+    this._bloomDown = this._bloomPing = null;
+    this._buildPrograms();
+    this._allocate();
+    this._lastFrameTime = 0;
+    this._contextLost = false;
   };
 
   // ---------------------------------------------------------------------
@@ -1421,6 +1483,11 @@
     window.removeEventListener('resize', this._onResize);
     document.removeEventListener('visibilitychange', this._onVisibility);
     if (this._resizeObserver) this._resizeObserver.disconnect();
+    if (this._intersectionObserver) this._intersectionObserver.disconnect();
+    if (this.canvas) {
+      this.canvas.removeEventListener('webglcontextlost', this._onContextLost);
+      this.canvas.removeEventListener('webglcontextrestored', this._onContextRestored);
+    }
 
     var gl = this.gl;
     if (gl) {
